@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>管理后台 - AI Chatbox</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/styles/tailwind.css">
+    <script src="/vendor/vue.global.prod.js"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div id="app" class="max-w-4xl mx-auto p-6 sm:p-10">
+        <header class="flex items-center justify-between border-b border-gray-700 pb-5 mb-8">
+            <div>
+                <p class="text-blue-400 text-sm mb-1">AI Chatbox</p>
+                <h1 class="text-2xl font-bold">管理后台</h1>
+            </div>
+            <div class="flex gap-3">
+                <button @click="goHome" class="px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 transition">返回聊天</button>
+                <button @click="logout" class="px-4 py-2 rounded-lg text-gray-400 hover:text-red-400 transition">退出登录</button>
+            </div>
+        </header>
+
+        <div v-if="loading" class="text-gray-400">正在加载...</div>
+        <section v-else class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-xl">
+            <h2 class="text-lg font-semibold mb-2">全局系统提示词</h2>
+            <p class="text-sm text-gray-400 mb-5">此内容会注入所有用户的新对话上下文。</p>
+            <textarea v-model="settings.global_system_prompt" rows="10" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-4 focus:outline-none focus:border-blue-500 text-gray-200"></textarea>
+            <h2 class="text-lg font-semibold mt-8 mb-2">外部 Google AI API</h2>
+            <p class="text-sm text-gray-400 mb-5">服务端会通过固定代理请求此地址。Google AI Studio 推荐填写 OpenAI 兼容地址：<span class="text-gray-300">https://generativelanguage.googleapis.com/v1beta/openai</span></p>
+            <div class="grid grid-cols-1 gap-5">
+                <label class="block">
+                    <span class="block text-sm text-gray-300 mb-2">API 地址</span>
+                    <input v-model="settings.external_api_url" type="url" placeholder="https://generativelanguage.googleapis.com/v1beta/openai" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                </label>
+                <label class="block">
+                    <span class="block text-sm text-gray-300 mb-2">API Key</span>
+                    <input v-model="settings.external_api_key" type="password" autocomplete="off" placeholder="输入 Google AI API Key" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                </label>
+                <label class="block">
+                    <span class="block text-sm text-gray-300 mb-2">模型列表</span>
+                    <span class="block text-xs text-gray-500 mb-2">逗号分隔；留空使用内置 Gemini 模型列表。</span>
+                    <input v-model="settings.external_models" type="text" placeholder="gemini-2.5-pro,gemini-2.5-flash" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                </label>
+            </div>
+            <h2 class="text-lg font-semibold mt-8 mb-2">模型生成参数</h2>
+            <p class="text-sm text-gray-400 mb-5">参数会应用到所有用户的 Ollama 对话。</p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                <label v-for="field in optionFields" :key="field.key" class="block">
+                    <span class="block text-sm text-gray-300 mb-2">{{ field.label }}</span>
+                    <span class="block text-xs text-gray-500 mb-2">{{ field.help }}</span>
+                    <input v-model="settings[field.key]" :step="field.step" :min="field.min" :max="field.max" type="number" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                </label>
+            </div>
+            <div class="flex justify-end mt-5">
+                <button @click="saveSettings" :disabled="saving" class="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition">
+                    {{ saving ? '保存中...' : '保存修改' }}
+                </button>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted } = Vue;
+
+        createApp({
+            setup() {
+                const token = localStorage.getItem('chat_token') || '';
+                const role = localStorage.getItem('chat_role') || '';
+                const settings = ref({ global_system_prompt: '', external_api_url: '', external_api_key: '', external_models: '' });
+                const optionFields = [
+                    { key: 'temperature', label: '温度', help: '越高越有创造性，范围 0 到 2。', step: '0.1', min: '0', max: '2' },
+                    { key: 'num_ctx', label: '上下文长度', help: '模型可读取的上下文 token 数。', step: '128', min: '128', max: '131072' },
+                    { key: 'top_p', label: 'Top P', help: '控制候选词概率范围，范围 0 到 1。', step: '0.05', min: '0', max: '1' },
+                    { key: 'top_k', label: 'Top K', help: '每步保留的候选词数量。', step: '1', min: '0', max: '1000' },
+                    { key: 'repeat_penalty', label: '重复惩罚', help: '大于 1 时减少重复内容。', step: '0.05', min: '0', max: '3' },
+                    { key: 'seed', label: '随机种子', help: '-1 表示每次随机，固定值可复现结果。', step: '1', min: '-1', max: '2147483647' },
+                    { key: 'num_predict', label: '最大生成长度', help: '-1 表示不限制生成 token 数。', step: '1', min: '-1', max: '131072' }
+                ];
+                const loading = ref(true);
+                const saving = ref(false);
+
+                const logout = () => {
+                    localStorage.removeItem('chat_token');
+                    localStorage.removeItem('chat_role');
+                    window.location.href = '/';
+                };
+
+                const goHome = () => { window.location.href = '/'; };
+
+                const loadSettings = async () => {
+                    if (!token || role !== 'admin') return logout();
+                    const res = await fetch('/api/admin/settings', {
+                        headers: { Authorization: 'Bearer ' + token }
+                    });
+                    if (!res.ok) return logout();
+                    settings.value = await res.json();
+                    loading.value = false;
+                };
+
+                const saveSettings = async () => {
+                    saving.value = true;
+                    const res = await fetch('/api/admin/settings', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Authorization: 'Bearer ' + token
+                        },
+                        body: JSON.stringify(settings.value)
+                    });
+                    saving.value = false;
+                    if (res.ok) alert('保存成功，新的对话上下文已生效。');
+                    else alert('保存失败，请重新登录。');
+                };
+
+                onMounted(loadSettings);
+                return { settings, optionFields, loading, saving, saveSettings, logout, goHome };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

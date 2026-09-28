@@ -1,0 +1,4 @@
+node_modules/
+chatbox.db*
+config.txt
+npm-debug.log*

@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Chatbox</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/styles/tailwind.css">
+    <link rel="stylesheet" href="/styles/app.css">
+    <script src="/vendor/vue.global.prod.js"></script>
+    <script src="/vendor/marked.umd.js"></script>
+</head>
+<body class="app-shell bg-gray-900 text-gray-100 h-screen font-sans overflow-hidden">
+    <div id="app" class="h-full">
+        <div class="h-full flex flex-col" :class="{ 'theme-light': isLightTheme, 'theme-dark': !isLightTheme, 'theme-transition': isThemeTransitioning }" @touchstart="handleTouchStart" @touchend="handleTouchEnd">
+        <!-- 登录/注册页 -->
+        <div v-if="!token" class="auth-screen">
+            <div class="auth-orbit auth-orbit-one"></div>
+            <div class="auth-orbit auth-orbit-two"></div>
+            <div class="auth-panel">
+                <div class="brand-mark brand-mark-large"><span>O</span></div>
+                <div class="auth-kicker">LOCAL INTELLIGENCE</div>
+                <h2>本地 AI 终端</h2>
+                <p class="auth-subtitle">把想法交给你的专属智能工作台</p>
+                <div class="auth-form">
+                    <label>用户名</label>
+                    <input v-model="authForm.username" type="text" placeholder="输入用户名" class="auth-input">
+                    <label>密码</label>
+                    <input v-model="authForm.password" type="password" placeholder="输入密码" class="auth-input">
+                </div>
+                <div class="auth-actions">
+                    <button @click="authAction('/api/login')" class="primary-action">登录</button>
+                    <button @click="authAction('/api/register')" class="secondary-action">注册</button>
+                </div>
+                <div class="auth-status"><span></span> 安全连接 · 数据保存在本地</div>
+            </div>
+        </div>
+
+        <!-- 聊天主界面 -->
+        <div v-else class="chat-app-shell">
+            <button v-if="isSidebarOpen" class="sidebar-backdrop" type="button" aria-label="关闭侧边栏" @click="closeSidebar"></button>
+            <aside class="gemini-sidebar" :class="{ 'is-collapsed': sidebarCollapsed, 'mobile-open': isSidebarOpen }">
+                <div class="sidebar-header">
+                    <div class="sidebar-brand" v-if="!sidebarCollapsed"></div>
+                    <button @click="handleSidebarHeaderClick" class="sidebar-collapse-button" :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18L9 12l6-6"/></svg>
+                    </button>
+                </div>
+
+                <div class="sidebar-section" v-if="!sidebarCollapsed">
+                    <button class="nav-item active">
+                        <span class="nav-icon">✦</span>
+                        <span>对话</span>
+                    </button>
+                    <button class="nav-item secondary" @click="newChat()">
+                        <span class="nav-icon">＋</span>
+                        <span>新建对话</span>
+                    </button>
+                </div>
+
+                <div class="recent-section" v-if="!sidebarCollapsed && convs.length">
+                    <div class="sidebar-divider"></div>
+                    <div class="section-title">历史对话</div>
+                    <transition-group name="conversation" tag="div" class="recent-list">
+                        <div v-for="conversation in convs" :key="conversation.id" class="recent-row">
+                            <button type="button" class="recent-item" :class="{ active: currentConvId === conversation.id }"
+                                @click="loadChat(conversation)" :title="conversation.title || '新对话'">
+                                {{ conversation.title || '新对话' }}
+                            </button>
+                            <div class="delete-control" :class="{ 'is-open': expandedDeleteId === conversation.id, 'is-busy': deletingConversationId === conversation.id }">
+                                <button type="button" class="delete-bin-button"
+                                    :disabled="deletingConversationId === conversation.id"
+                                    :aria-label="expandedDeleteId === conversation.id ? '关闭删除确认' : `删除${conversation.title || '新对话'}`"
+                                    :aria-expanded="expandedDeleteId === conversation.id"
+                                    @click.stop="toggleDeleteControl(conversation)">
+                                    <svg v-if="completedDeleteId === conversation.id" class="delete-check-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>
+                                    <svg v-else class="delete-bin-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path class="delete-bin-lid" d="M4 7h16M10 11v6m4-6v6M5 7l1 13h12l1-13M9 7V4h6v3" /></svg>
+                                </button>
+                                <transition name="delete-panel">
+                                    <div v-if="expandedDeleteId === conversation.id" class="delete-confirm-panel" role="group" aria-label="确认删除对话">
+                                        <button type="button" class="delete-action-confirm" aria-label="确认删除" title="确认删除" @click.stop="deleteConversation(conversation)">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>
+                                        </button>
+                                        <button type="button" class="delete-action-cancel" aria-label="取消删除" title="取消删除" @click.stop="cancelDelete">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+                                        </button>
+                                    </div>
+                                </transition>
+                            </div>
+                        </div>
+                    </transition-group>
+                    <a class="rareui-attribution" href="https://rareui.com/components/deletebutton" target="_blank" rel="noopener noreferrer">删除交互灵感来自 Rare UI</a>
+                </div>
+
+                <div class="sidebar-footer" v-if="!sidebarCollapsed">
+                    <div class="settings-wrap" @click.stop>
+                        <button class="settings-item" @click="toggleSettingsMenu">
+                            <span class="settings-text">设置</span>
+                        </button>
+                        <div v-if="settingsMenuOpen" class="settings-menu">
+                            <button @click="openUserPrompt">我的提示词</button>
+                            <button @click="toggleTheme">{{ isLightTheme ? '暗色模式' : '亮色模式' }}</button>
+                            <button v-if="userRole === 'admin'" @click="openAdmin">管理后台</button>
+                        </div>
+                    </div>
+                </div>
+
+            </aside>
+
+            <main class="chat-main-panel">
+                <button class="mobile-sidebar-button" type="button" aria-label="打开侧边栏" @click="toggleSidebar">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+                </button>
+                <div class="chat-surface" id="chat-container">
+                    <div v-if="messages.length === 0" :key="welcomeAnimationKey" class="welcome-panel">
+                        <div class="welcome-icon"><span></span><span></span><span></span></div>
+                        <p class="welcome-eyebrow">CHATBOX WORKSPACE</p>
+                        <h1><span class="desktop-welcome-title">今天想一起解决什么问题？</span><span class="mobile-welcome-title">需要我为你做些什么？</span></h1>
+                        <p class="welcome-description">从一个问题开始，把灵感变成清晰的答案。</p>
+                        <transition-group name="suggestion" tag="div" class="prompt-suggestions">
+                            <button v-for="prompt in promptSuggestions" :key="prompt.label" @click="inputText = prompt.text">{{ prompt.label }} <span>↗</span></button>
+                        </transition-group>
+                    </div>
+
+                    <transition-group name="message" tag="div" class="message-list">
+                        <div v-for="(msg, idx) in messages" :key="idx" class="message-row" :class="msg.role === 'user' ? 'message-user' : 'message-assistant'">
+                            <div class="message-avatar" :class="msg.role === 'user' ? 'bg-blue-600' : 'bg-green-600'">
+                                {{ msg.role === 'user' ? 'U' : 'AI' }}
+                            </div>
+                            <div class="message-content">
+                                <div class="message-bubble prose prose-invert max-w-none text-gray-200 leading-relaxed overflow-hidden"
+                                     :class="msg.role === 'user' ? 'bg-blue-600/10 border border-blue-500/20' : 'bg-gray-800 border border-gray-700'"
+                                     >
+                                    <div v-if="isGenerating && msg.role === 'assistant' && !msg.content" class="typing-indicator">
+                                        输入中<span>.</span><span>.</span><span>.</span>
+                                    </div>
+                                    <div v-else v-html="renderMarkdown(msg.content)"></div>
+                                </div>
+                                <div v-if="msg.role === 'assistant' && msg.content && !isGenerating" class="message-actions">
+                                    <button @click.stop="regenerateMessage(idx)" class="message-action" aria-label="重新生成" title="重新生成">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 11a8.1 8.1 0 0 0-14.5-3.5L4 9m0 0V4m0 5h5M4 13a8.1 8.1 0 0 0 14.5 3.5L20 15m0 0v5m0-5h-5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                                    </button>
+                                    <button @click.stop="copyMessage(msg.content, idx)" class="message-action" aria-label="复制消息" :title="copiedMessageIndex === idx ? '已复制' : '复制消息'">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="8" y="8" width="11" height="11" rx="2" stroke-width="1.8"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke-width="1.8"></path></svg>
+                                    </button>
+                                    <span v-if="msg.outputSpeed" class="output-speed" :title="`估算输出速率：${msg.outputSpeed} tok/s`">{{ msg.outputSpeed }} tok/s</span>
+                                </div>
+                            </div>
+                        </div>
+                    </transition-group>
+                </div>
+
+                <div class="chat-input-wrapper">
+                    <div class="chat-composer">
+                        <textarea v-model="inputText" @keydown.enter.exact.prevent="sendMessage" rows="1" placeholder="点击输入文本"
+                                  class="composer-textarea"
+                                  style="min-height: 44px;"></textarea>
+                        <div class="composer-right-tools" @click.stop>
+                            <button @click="toggleModelMenu" class="composer-model-trigger" :aria-expanded="modelMenuOpen ? 'true' : 'false'" type="button" aria-label="选择模型">
+                                <span class="composer-model-trigger-text">{{ selectedModel || '选择模型' }}</span>
+                                <svg class="composer-model-trigger-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M5 7.5l5 5 5-5" />
+                                </svg>
+                            </button>
+                            <transition name="model-panel">
+                                <div v-if="modelMenuOpen" class="composer-model-panel">
+                                    <button v-for="m in models" :key="m.name" type="button" @click="selectModel(m.name)" class="composer-model-option" :class="{ 'is-selected': selectedModel === m.name }">
+                                        <span class="composer-model-name">{{ m.name }}</span>
+                                    </button>
+                                </div>
+                            </transition>
+                        </div>
+                        <button @click="sendMessage" :disabled="isGenerating" class="send-button" aria-label="发送消息">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+                        </button>
+                    </div>
+                    <div class="composer-caption">内容由 AI 生成，请注意核实重要信息</div>
+                </div>
+            </main>
+        </div>
+
+        <!-- 用户提示词 Modal -->
+        <div v-if="showUserPrompt" class="fixed inset-0 bg-black/70 flex items-center justify-center z-50 backdrop-blur-sm p-4">
+            <div class="bg-gray-800 p-6 rounded-xl w-[500px] shadow-2xl border border-gray-700">
+                <h2 class="text-xl font-bold mb-2">我的 AI 提示词</h2>
+                <p class="text-sm text-gray-400 mb-4">只对当前账号生效，会和管理员的全局提示词一起使用。</p>
+                <textarea v-model="personalPrompt" rows="8" maxlength="10000" placeholder="例如：请用简洁的中文回答，并优先给出可执行的步骤。" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 mb-5 focus:outline-none focus:border-blue-500 text-gray-200"></textarea>
+                <div class="flex justify-end gap-3">
+                    <button @click="showUserPrompt = false" class="px-5 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 transition">关闭</button>
+                    <button @click="saveUserPrompt" class="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 transition">保存提示词</button>
+                </div>
+            </div>
+        </div>
+
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted, onUnmounted, nextTick } = Vue;
+
+        createApp({
+            setup() {
+                const token = ref(localStorage.getItem('chat_token') || '');
+                const userRole = ref(localStorage.getItem('chat_role') || '');
+                const isLightTheme = ref(localStorage.getItem('chat_theme') === 'light');
+                const isThemeTransitioning = ref(false);
+                const authForm = ref({ username: '', password: '' });
+                const models = ref([]);
+                const selectedModel = ref('');
+                const convs = ref([]);
+                const currentConvId = ref(null);
+                const messages = ref([]);
+                const messagesByConversation = ref({});
+                const welcomeAnimationKey = ref(0);
+                const suggestionPool = [
+                    { label: '整理工作计划', text: '帮我整理今天的工作计划' },
+                    { label: '解释复杂概念', text: '帮我解释一个复杂的概念' },
+                    { label: '创意写作', text: '帮我写一段有创意的文案' },
+                    { label: '总结一篇文章', text: '帮我总结这篇文章的核心观点' },
+                    { label: '优化邮件表达', text: '帮我把这段邮件写得更清晰得体' },
+                    { label: '制定学习路线', text: '为我制定一个循序渐进的学习计划' },
+                    { label: '头脑风暴', text: '围绕这个主题给我一些新颖的点子' },
+                    { label: '检查代码思路', text: '帮我检查这段代码的思路和潜在问题' },
+                    { label: '练习英语对话', text: '陪我进行一段日常英语对话并纠正表达' },
+                    { label: '比较方案优劣', text: '帮我比较这几个方案的优缺点' },
+                    { label: '设计周末安排', text: '根据我的兴趣规划一个轻松的周末' },
+                    { label: '提炼会议要点', text: '把这段会议记录整理成重点和待办事项' }
+                ];
+                const promptSuggestions = ref([]);
+                let suggestionRotationTimer = null;
+                const inputText = ref('');
+                const isGenerating = ref(false);
+                const generatingConversationId = ref(null);
+                const copiedMessageIndex = ref(null);
+                const showUserPrompt = ref(false);
+                const personalPrompt = ref('');
+                const expandedDeleteId = ref(null);
+                const deletingConversationId = ref(null);
+                const completedDeleteId = ref(null);
+                const isSidebarOpen = ref(false);
+                const sidebarCollapsed = ref(false);
+                const settingsMenuOpen = ref(false);
+                const touchStartX = ref(0);
+                const touchStartY = ref(0);
+                const modelMenuOpen = ref(false);
+                const defaultModelName = 'qwen2.5:3b';
+                const getDefaultModel = () => models.value.find(model => model.name === defaultModelName)?.name || models.value[0]?.name || '';
+                const toggleModelMenu = () => { modelMenuOpen.value = !modelMenuOpen.value; };
+                const closeModelMenu = () => { modelMenuOpen.value = false; };
+                const selectModel = (model) => { selectedModel.value = model; closeModelMenu(); };
+                const rotatePromptSuggestions = () => {
+                    const previousPrompts = new Set(promptSuggestions.value);
+                    const candidates = suggestionPool.filter(prompt => !previousPrompts.has(prompt));
+                    for (let index = candidates.length - 1; index > 0; index--) {
+                        const randomIndex = Math.floor(Math.random() * (index + 1));
+                        [candidates[index], candidates[randomIndex]] = [candidates[randomIndex], candidates[index]];
+                    }
+                    promptSuggestions.value = candidates.slice(0, 3);
+                };
+                const toggleSidebarCollapse = () => { sidebarCollapsed.value = !sidebarCollapsed.value; };
+                const toggleSettingsMenu = () => { settingsMenuOpen.value = !settingsMenuOpen.value; };
+                const closeSettingsMenu = () => { settingsMenuOpen.value = false; };
+                const syncViewportHeight = () => {
+                    const viewportHeight = window.visualViewport?.height || window.innerHeight;
+                    document.documentElement.style.setProperty('--app-height', `${viewportHeight}px`);
+                };
+
+                const fetchAuth = (url, opts) => fetch(url, {
+                    ...opts,
+                    headers: { ...opts?.headers, 'Authorization': 'Bearer ' + token.value }
+                }).then(res => {
+                    if (res.status === 401 || res.status === 403) { logout(); throw new Error('Auth failed'); }
+                    return res;
+                });
+
+                const authAction = async (endpoint) => {
+                    if (!authForm.value.username || !authForm.value.password) return alert("请输入完整信息");
+                    const res = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(authForm.value)
+                    });
+                    const data = await res.json();
+                    if (res.ok && data.token) {
+                        token.value = data.token;
+                        userRole.value = data.role;
+                        localStorage.setItem('chat_token', data.token);
+                        localStorage.setItem('chat_role', data.role);
+                        initData();
+                    } else if (res.ok) {
+                        alert(data.msg);
+                    } else {
+                        alert(data.detail);
+                    }
+                };
+
+                const logout = () => {
+                    token.value = '';
+                    userRole.value = '';
+                    localStorage.removeItem('chat_token');
+                    localStorage.removeItem('chat_role');
+                };
+
+                const toggleTheme = () => {
+                    isThemeTransitioning.value = true;
+                    isLightTheme.value = !isLightTheme.value;
+                    localStorage.setItem('chat_theme', isLightTheme.value ? 'light' : 'dark');
+                    window.setTimeout(() => { isThemeTransitioning.value = false; }, 380);
+                };
+
+                const initData = async () => {
+                    if (!token.value) return;
+                    try {
+                        const mRes = await fetchAuth('/api/models');
+                        const mData = await mRes.json();
+                        models.value = (mData.models || []).filter(model => model && model.name && model.name.trim());
+                        selectedModel.value = getDefaultModel();
+
+                        const cRes = await fetchAuth('/api/conversations');
+                        convs.value = await cRes.json();
+                        const pRes = await fetchAuth('/api/user/settings');
+                        const pData = await pRes.json();
+                        personalPrompt.value = pData.personal_prompt || '';
+                    } catch (e) {}
+                };
+
+                const newChat = () => {
+                    selectedModel.value = getDefaultModel();
+                    currentConvId.value = null;
+                    messages.value = [];
+                    inputText.value = '';
+                    isSidebarOpen.value = false;
+                    welcomeAnimationKey.value++;
+                };
+
+                const loadChat = async (conversation) => {
+                    isSidebarOpen.value = false;
+                    currentConvId.value = conversation.id;
+                    if (conversation.model) selectedModel.value = conversation.model;
+                    if (!messagesByConversation.value[conversation.id]) {
+                        const res = await fetchAuth(`/api/conversations/${conversation.id}/messages`);
+                        messagesByConversation.value[conversation.id] = await res.json();
+                    }
+                    messages.value = messagesByConversation.value[conversation.id];
+                    scrollToBottom();
+                };
+
+                const toggleDeleteControl = (conversation) => {
+                    if (deletingConversationId.value) return;
+                    expandedDeleteId.value = expandedDeleteId.value === conversation.id ? null : conversation.id;
+                };
+
+                const cancelDelete = () => { expandedDeleteId.value = null; };
+
+                const handleDeleteEscape = (event) => {
+                    if (event.key === 'Escape' && expandedDeleteId.value !== null) {
+                        event.preventDefault();
+                        cancelDelete();
+                    }
+                };
+
+                const toggleSidebar = () => { isSidebarOpen.value = !isSidebarOpen.value; };
+                const closeSidebar = () => { isSidebarOpen.value = false; };
+                const handleSidebarHeaderClick = () => {
+                    if (window.matchMedia('(max-width: 720px)').matches) closeSidebar();
+                    else toggleSidebarCollapse();
+                };
+                const handleTouchStart = (event) => {
+                    touchStartX.value = event.touches[0]?.clientX || 0;
+                    touchStartY.value = event.touches[0]?.clientY || 0;
+                };
+                const handleTouchEnd = (event) => {
+                    const endX = event.changedTouches[0]?.clientX || 0;
+                    const endY = event.changedTouches[0]?.clientY || 0;
+                    const deltaX = endX - touchStartX.value;
+                    const deltaY = endY - touchStartY.value;
+                    const isHorizontalSwipe = Math.abs(deltaX) > 50 && Math.abs(deltaX) > Math.abs(deltaY);
+                    if (!isSidebarOpen.value && isHorizontalSwipe) {
+                        isSidebarOpen.value = true;
+                    } else if (isSidebarOpen.value && isHorizontalSwipe && deltaX < 0) {
+                        isSidebarOpen.value = false;
+                    }
+                };
+
+                const deleteConversation = async (conversation) => {
+                    if (!conversation || deletingConversationId.value) return;
+                    const conversationId = conversation.id;
+                    deletingConversationId.value = conversationId;
+                    expandedDeleteId.value = null;
+                    try {
+                        const res = await fetchAuth(`/api/conversations/${conversationId}`, { method: 'DELETE' });
+                        if (!res.ok) throw new Error('Delete failed');
+                        completedDeleteId.value = conversationId;
+                        await new Promise(resolve => window.setTimeout(resolve, 520));
+                        convs.value = convs.value.filter(item => item.id !== conversationId);
+                        if (currentConvId.value === conversationId) {
+                            currentConvId.value = null;
+                            messages.value = [];
+                        }
+                        delete messagesByConversation.value[conversationId];
+                    } catch (error) {
+                        expandedDeleteId.value = conversationId;
+                        alert('删除失败，请重试。');
+                    } finally {
+                        deletingConversationId.value = null;
+                        completedDeleteId.value = null;
+                    }
+                };
+
+                const generateReply = async (conversationId, conversationMessages, assistantIndex, msgContent, regenerate = false) => {
+                    isGenerating.value = true;
+                    generatingConversationId.value = conversationId;
+                    const generationStartedAt = performance.now();
+                    if (currentConvId.value === conversationId) scrollToBottom();
+
+                    try {
+                        const res = await fetch('/api/chat', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token.value },
+                            body: JSON.stringify({ conv_id: conversationId, model: selectedModel.value, message: msgContent, regenerate })
+                        });
+
+                        const reader = res.body.getReader();
+                        const decoder = new TextDecoder("utf-8");
+                        let buffer = "";
+
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            buffer += decoder.decode(value, { stream: true });
+                            let lines = buffer.split('\n');
+                            buffer = lines.pop();
+
+                            for (let line of lines) {
+                                if (line.trim()) {
+                                    try {
+                                        const parsed = JSON.parse(line);
+                                        if (parsed.message && parsed.message.content) {
+                                            conversationMessages[assistantIndex].content += parsed.message.content;
+                                            if (currentConvId.value === conversationId) scrollToBottom();
+                                        }
+                                    } catch (e) {}
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.error(e);
+                    }
+
+                    const generatedText = conversationMessages[assistantIndex].content;
+                    const generatedTokens = estimateTokens(generatedText);
+                    const elapsedSeconds = Math.max((performance.now() - generationStartedAt) / 1000, 0.1);
+                    conversationMessages[assistantIndex].outputSpeed = generatedTokens > 0
+                        ? Math.max(1, Math.round(generatedTokens / elapsedSeconds))
+                        : null;
+                    isGenerating.value = false;
+                    generatingConversationId.value = null;
+                    const cRes = await fetchAuth('/api/conversations');
+                    convs.value = await cRes.json();
+                };
+
+                const sendMessage = async () => {
+                    if (!inputText.value.trim() || isGenerating.value) return;
+                    if (!selectedModel.value) return alert("请先选择或安装 Ollama 模型");
+
+                    let conversationId = currentConvId.value;
+                    if (!conversationId) {
+                        const res = await fetchAuth('/api/conversations', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ model: selectedModel.value })
+                        });
+                        if (!res.ok) return alert('创建对话失败，请重试。');
+                        const conversation = await res.json();
+                        conversationId = conversation.id;
+                        currentConvId.value = conversationId;
+                        convs.value.unshift(conversation);
+                        messagesByConversation.value[conversationId] = [];
+                    }
+                    const conversationMessages = messagesByConversation.value[conversationId] || [];
+                    messagesByConversation.value[conversationId] = conversationMessages;
+                    messages.value = conversationMessages;
+                    const msgContent = inputText.value;
+                    inputText.value = '';
+                    conversationMessages.push({ role: 'user', content: msgContent });
+                    const assistantIndex = conversationMessages.length;
+                    conversationMessages.push({ role: 'assistant', content: '' });
+                    await generateReply(conversationId, conversationMessages, assistantIndex, msgContent);
+                };
+
+                const regenerateMessage = async (messageIndex) => {
+                    if (isGenerating.value) return;
+                    const conversationId = currentConvId.value;
+                    const conversationMessages = messagesByConversation.value[conversationId];
+                    if (!conversationId || !conversationMessages || conversationMessages[messageIndex]?.role !== 'assistant') return;
+                    let userMessageIndex = messageIndex - 1;
+                    while (userMessageIndex >= 0 && conversationMessages[userMessageIndex].role !== 'user') userMessageIndex--;
+                    if (userMessageIndex < 0) return;
+                    const msgContent = conversationMessages[userMessageIndex].content;
+                    conversationMessages[messageIndex].content = '';
+                    conversationMessages[messageIndex].outputSpeed = null;
+                    await generateReply(conversationId, conversationMessages, messageIndex, msgContent, true);
+                };
+
+                const copyMessage = async (content, messageIndex) => {
+                    try {
+                        await navigator.clipboard.writeText(content);
+                        copiedMessageIndex.value = messageIndex;
+                        setTimeout(() => {
+                            if (copiedMessageIndex.value === messageIndex) copiedMessageIndex.value = null;
+                        }, 1500);
+                    } catch (e) {
+                        alert('复制失败，请检查浏览器权限。');
+                    }
+                };
+
+                const estimateTokens = (text) => {
+                    const chineseCharacters = (text.match(/[\u3400-\u9fff]/g) || []).length;
+                    const latinText = text.replace(/[\u3400-\u9fff]/g, ' ');
+                    const latinTokens = (latinText.match(/[A-Za-z0-9]+|[^\sA-Za-z0-9]/g) || []).length;
+                    return chineseCharacters + latinTokens;
+                };
+
+                const scrollToBottom = () => {
+                    nextTick(() => {
+                        const container = document.getElementById('chat-container');
+                        if (container) container.scrollTop = container.scrollHeight;
+                    });
+                };
+
+                const renderMarkdown = (text) => marked.parse(text || '');
+
+                const openAdmin = () => { window.location.href = '/admin.html'; };
+
+                const openUserPrompt = () => { showUserPrompt.value = true; };
+
+                const saveUserPrompt = async () => {
+                    const res = await fetchAuth('/api/user/settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ personal_prompt: personalPrompt.value })
+                    });
+                    if (res.ok) {
+                        showUserPrompt.value = false;
+                        alert('个人提示词已保存。');
+                    } else {
+                        alert('保存失败，请重试。');
+                    }
+                };
+
+                onMounted(() => {
+                    rotatePromptSuggestions();
+                    suggestionRotationTimer = window.setInterval(() => {
+                        if (!messages.value.length) rotatePromptSuggestions();
+                    }, 30000);
+                    initData();
+                    syncViewportHeight();
+                    window.addEventListener('keydown', handleDeleteEscape);
+                    window.visualViewport?.addEventListener('resize', syncViewportHeight);
+                    window.addEventListener('resize', syncViewportHeight);
+                    window.addEventListener('click', (event) => {
+                        const trigger = document.querySelector('.composer-model-trigger');
+                        const panel = document.querySelector('.composer-model-panel');
+                        if (!trigger || !panel) return;
+                        if (!trigger.contains(event.target) && !panel.contains(event.target)) {
+                            closeModelMenu();
+                        }
+                        const settingsBtn = document.querySelector('.settings-item');
+                        const settingsMenu = document.querySelector('.settings-menu');
+                        if (settingsBtn && settingsMenu && !settingsBtn.contains(event.target) && !settingsMenu.contains(event.target)) {
+                            closeSettingsMenu();
+                        }
+                    });
+                });
+
+                onUnmounted(() => {
+                    window.clearInterval(suggestionRotationTimer);
+                    window.removeEventListener('keydown', handleDeleteEscape);
+                });
+
+                return {
+                    token, userRole, isLightTheme, isThemeTransitioning, toggleTheme, authForm, authAction, logout,
+                    models, selectedModel, convs, currentConvId, messages, inputText,
+                    modelMenuOpen, toggleModelMenu, closeModelMenu, selectModel,
+                    newChat, loadChat, sendMessage, isGenerating, renderMarkdown,
+                    regenerateMessage, copyMessage, copiedMessageIndex,
+                    openAdmin, showUserPrompt, personalPrompt, openUserPrompt, saveUserPrompt,
+                    expandedDeleteId, deletingConversationId, completedDeleteId, toggleDeleteControl, cancelDelete, deleteConversation,
+                    isSidebarOpen, toggleSidebar, closeSidebar, handleTouchStart, handleTouchEnd,
+                    sidebarCollapsed, toggleSidebarCollapse, handleSidebarHeaderClick, settingsMenuOpen, toggleSettingsMenu, closeSettingsMenu,
+                    welcomeAnimationKey, promptSuggestions
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

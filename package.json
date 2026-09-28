@@ -1,0 +1,19 @@
+{
+  "name": "aichatbox",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "marked": "^18.0.14",
+    "sqlite3": "^6.0.1",
+    "undici": "^6.28.0",
+    "vue": "^3.5.43"
+  }
+}
