@@ -115,7 +115,7 @@
                     <div v-if="messages.length === 0" :key="welcomeAnimationKey" class="welcome-panel">
                         <div class="welcome-icon"><span></span><span></span><span></span></div>
                         <p class="welcome-eyebrow">CHATBOX WORKSPACE</p>
-                        <h1><span class="desktop-welcome-title">今天想一起解决什么问题？</span><span class="mobile-welcome-title">需要我为你做些什么？</span></h1>
+                        <h1 :class="{ 'is-wiping': isWelcomeHeadlineErasing, 'is-wiping-in': isWelcomeHeadlineRevealing }"><span class="welcome-headline-text">{{ welcomeHeadline }}</span></h1>
                         <p class="welcome-description">从一个问题开始，把灵感变成清晰的答案。</p>
                         <transition-group name="suggestion" tag="div" class="prompt-suggestions">
                             <button v-for="prompt in promptSuggestions" :key="prompt.label" @click="inputText = prompt.text">{{ prompt.label }} <span>↗</span></button>
@@ -212,6 +212,16 @@
                 const messages = ref([]);
                 const messagesByConversation = ref({});
                 const welcomeAnimationKey = ref(0);
+                const welcomeHeadlines = [
+                    '今天想一起解决什么问题？',
+                    '有什么新想法，想一起探索？',
+                    '正在处理什么难题？',
+                    '今天的灵感从哪里开始？',
+                    '需要我帮你理清思路吗？'
+                ];
+                const welcomeHeadline = ref(welcomeHeadlines[0]);
+                const isWelcomeHeadlineErasing = ref(false);
+                const isWelcomeHeadlineRevealing = ref(false);
                 const suggestionPool = [
                     { label: '整理工作计划', text: '帮我整理今天的工作计划' },
                     { label: '解释复杂概念', text: '帮我解释一个复杂的概念' },
@@ -228,6 +238,9 @@
                 ];
                 const promptSuggestions = ref([]);
                 let suggestionRotationTimer = null;
+                let welcomeHeadlineTimer = null;
+                let welcomeHeadlineTransitionTimer = null;
+                let welcomeHeadlineIndex = 0;
                 const inputText = ref('');
                 const isGenerating = ref(false);
                 const generatingConversationId = ref(null);
@@ -256,6 +269,19 @@
                         [candidates[index], candidates[randomIndex]] = [candidates[randomIndex], candidates[index]];
                     }
                     promptSuggestions.value = candidates.slice(0, 3);
+                };
+                const rotateWelcomeHeadline = () => {
+                    if (messages.value.length) return;
+                    isWelcomeHeadlineErasing.value = true;
+                    welcomeHeadlineTransitionTimer = window.setTimeout(() => {
+                        welcomeHeadlineIndex = (welcomeHeadlineIndex + 1) % welcomeHeadlines.length;
+                        welcomeHeadline.value = welcomeHeadlines[welcomeHeadlineIndex];
+                        isWelcomeHeadlineErasing.value = false;
+                        isWelcomeHeadlineRevealing.value = true;
+                        welcomeHeadlineTransitionTimer = window.setTimeout(() => {
+                            isWelcomeHeadlineRevealing.value = false;
+                        }, 650);
+                    }, 650);
                 };
                 const toggleSidebarCollapse = () => { sidebarCollapsed.value = !sidebarCollapsed.value; };
                 const toggleSettingsMenu = () => { settingsMenuOpen.value = !settingsMenuOpen.value; };
@@ -553,6 +579,7 @@
                     suggestionRotationTimer = window.setInterval(() => {
                         if (!messages.value.length) rotatePromptSuggestions();
                     }, 30000);
+                    welcomeHeadlineTimer = window.setInterval(rotateWelcomeHeadline, 20000);
                     initData();
                     syncViewportHeight();
                     window.addEventListener('keydown', handleDeleteEscape);
@@ -561,13 +588,12 @@
                     window.addEventListener('click', (event) => {
                         const trigger = document.querySelector('.composer-model-trigger');
                         const panel = document.querySelector('.composer-model-panel');
-                        if (!trigger || !panel) return;
-                        if (!trigger.contains(event.target) && !panel.contains(event.target)) {
+                        if (trigger && panel && !trigger.contains(event.target) && !panel.contains(event.target)) {
                             closeModelMenu();
                         }
-                        const settingsBtn = document.querySelector('.settings-item');
+                        const settingsWrap = document.querySelector('.settings-wrap');
                         const settingsMenu = document.querySelector('.settings-menu');
-                        if (settingsBtn && settingsMenu && !settingsBtn.contains(event.target) && !settingsMenu.contains(event.target)) {
+                        if (settingsWrap && settingsMenu && !settingsWrap.contains(event.target)) {
                             closeSettingsMenu();
                         }
                     });
@@ -575,6 +601,8 @@
 
                 onUnmounted(() => {
                     window.clearInterval(suggestionRotationTimer);
+                    window.clearInterval(welcomeHeadlineTimer);
+                    window.clearTimeout(welcomeHeadlineTransitionTimer);
                     window.removeEventListener('keydown', handleDeleteEscape);
                 });
 
@@ -588,7 +616,8 @@
                     expandedDeleteId, deletingConversationId, completedDeleteId, toggleDeleteControl, cancelDelete, deleteConversation,
                     isSidebarOpen, toggleSidebar, closeSidebar, handleTouchStart, handleTouchEnd,
                     sidebarCollapsed, toggleSidebarCollapse, handleSidebarHeaderClick, settingsMenuOpen, toggleSettingsMenu, closeSettingsMenu,
-                    welcomeAnimationKey, promptSuggestions
+                    welcomeAnimationKey, promptSuggestions,
+                    welcomeHeadline, isWelcomeHeadlineErasing, isWelcomeHeadlineRevealing
                 };
             }
         }).mount('#app');
