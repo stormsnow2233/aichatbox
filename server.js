@@ -135,6 +135,42 @@ app.post('/api/user/settings', authUser, async (req, res) => {
     res.json({ msg: '个人提示词已保存' });
 });
 
+function normalizeProvider(provider) {
+    const type = provider.type === 'anthropic' ? 'anthropic' : 'openai';
+    const defaultUrl = type === 'anthropic' ? 'https://api.anthropic.com/v1' : '';
+    return {
+        id: String(provider.id || '').slice(0, 80),
+        name: String(provider.name || (type === 'anthropic' ? 'Claude' : 'OpenAI 兼容')).slice(0, 80),
+        type,
+        base_url: String(provider.base_url || defaultUrl).trim().replace(/\/$/, '').slice(0, 500),
+        api_key: String(provider.api_key || '').trim().slice(0, 1000),
+        models: String(provider.models || '').slice(0, 10000)
+    };
+}
+
+function parseProviderModels(provider) {
+    return provider.models.split(/[\n,，]/).map(model => model.trim()).filter(Boolean);
+}
+
+function providerEndpoint(baseUrl, endpoint) {
+    const base = String(baseUrl || '').trim().replace(/\/$/, '');
+    if (!base) throw new Error('请填写 API 地址');
+    if (base.endsWith(endpoint)) return base;
+    if (base.endsWith('/v1') && endpoint.startsWith('/v1/')) return `${base}${endpoint.slice(3)}`;
+    return `${base}${endpoint}`;
+}
+
+async function fetchProviderModels(provider) {
+    const url = providerEndpoint(provider.base_url, provider.type === 'anthropic' ? '/v1/models' : '/models');
+    const headers = provider.type === 'anthropic'
+        ? { 'x-api-key': provider.api_key, 'anthropic-version': '2023-06-01' }
+        : { Authorization: `Bearer ${provider.api_key}` };
+    const response = await fetch(url, { headers, dispatcher: externalProxyAgent });
+    if (!response.ok) throw new Error(`模型列表请求失败 (${response.status}): ${(await response.text()).slice(0, 300)}`);
+    const data = await response.json();
+    return (data.data || data.models || []).map(item => typeof item === 'string' ? item : item.id || item.name).filter(Boolean);
+}
+
 app.get('/api/models', authUser, async (req, res) => {
     let ollamaModels = [];
     try {
@@ -143,12 +179,22 @@ app.get('/api/models', authUser, async (req, res) => {
         ollamaModels = data.models || [];
     } catch (err) {}
     try {
-        const config = await dbAll(`SELECT key, value FROM config WHERE key IN ('external_api_url', 'external_api_key', 'external_models')`);
+        const config = await dbAll(`SELECT key, value FROM config WHERE key IN ('external_providers', 'external_api_url', 'external_api_key', 'external_models')`);
         const externalSettings = config.reduce((values, item) => ({ ...values, [item.key]: item.value }), {});
-        const configuredModels = (externalSettings.external_models || GOOGLE_MODELS.join(','))
-            .split(',').map(model => model.trim()).filter(Boolean);
-        const externalEnabled = Boolean(externalSettings.external_api_url || externalSettings.external_api_key);
-        const externalModels = externalEnabled ? configuredModels.map(name => ({ name, external: true })) : [];
+        let providers = [];
+        if (externalSettings.external_providers) {
+            try { providers = JSON.parse(externalSettings.external_providers).map(normalizeProvider); } catch (err) {}
+        } else if (externalSettings.external_api_url || externalSettings.external_api_key) {
+            providers = [normalizeProvider({
+                id: 'legacy-google', name: 'Google AI', type: 'openai',
+                base_url: externalSettings.external_api_url || GOOGLE_API_URL,
+                api_key: externalSettings.external_api_key,
+                models: externalSettings.external_models || GOOGLE_MODELS.join(',')
+            })];
+        }
+        const externalModels = providers.filter(provider => provider.base_url && provider.api_key).flatMap(provider => parseProviderModels(provider).map(name => ({
+            name: `ext:${provider.id}:${name}`, label: name, provider: provider.name, external: true
+        })));
         res.json({ models: [...ollamaModels, ...externalModels] });
     } catch (err) { res.json({ models: ollamaModels }); }
 });
@@ -203,7 +249,7 @@ app.post('/api/chat', authUser, async (req, res) => {
 
     const history = await dbAll(`SELECT role, content FROM messages WHERE conv_id = ? ORDER BY id ASC`, [conv_id]);
     const userSettings = await dbGet(`SELECT personal_prompt FROM user_settings WHERE user_id = ?`, [req.user.id]);
-    const config = await dbAll(`SELECT key, value FROM config WHERE key IN ('global_system_prompt', 'external_api_url', 'external_api_key', 'external_models', ${Object.keys(modelOptionDefaults).map(() => '?').join(', ')})`, Object.keys(modelOptionDefaults));
+    const config = await dbAll(`SELECT key, value FROM config WHERE key IN ('global_system_prompt', 'external_providers', 'external_api_url', 'external_api_key', 'external_models', ${Object.keys(modelOptionDefaults).map(() => '?').join(', ')})`, Object.keys(modelOptionDefaults));
     const settings = config.reduce((values, item) => ({ ...values, [item.key]: item.value }), {});
     const options = {
         temperature: clampNumber(settings.temperature, 0, 2, 0.7),
@@ -221,25 +267,65 @@ app.post('/api/chat', authUser, async (req, res) => {
     const payload = { model, messages: [...systemMessages, ...history], options };
 
     try {
-            const configuredExternalModels = (settings.external_models || GOOGLE_MODELS.join(','))
-                .split(',').map(item => item.trim()).filter(Boolean);
-            const isExternalModel = Boolean((settings.external_api_url || settings.external_api_key) && configuredExternalModels.includes(model));
-            const externalUrl = String(settings.external_api_url || GOOGLE_API_URL).trim().replace(/\/$/, '');
-            const targetUrl = isExternalModel
-                ? `${externalUrl}${externalUrl.endsWith('/chat/completions') ? '' : '/chat/completions'}`
-                : `${OLLAMA_URL}/api/chat`;
-            const requestPayload = isExternalModel
-                ? { model, messages: payload.messages, temperature: options.temperature, top_p: options.top_p, max_tokens: options.num_predict > 0 ? options.num_predict : undefined, stream: true }
-                : payload;
-            const requestHeaders = { 'Content-Type': 'application/json' };
-            if (isExternalModel && settings.external_api_key) {
-                requestHeaders.Authorization = `Bearer ${settings.external_api_key}`;
+        let providers = [];
+        if (settings.external_providers) {
+            try { providers = JSON.parse(settings.external_providers).map(normalizeProvider); } catch (err) {}
+        } else if (settings.external_api_url || settings.external_api_key) {
+            providers = [normalizeProvider({
+                id: 'legacy-google', name: 'Google AI', type: 'openai',
+                base_url: settings.external_api_url || GOOGLE_API_URL,
+                api_key: settings.external_api_key,
+                models: settings.external_models || GOOGLE_MODELS.join(',')
+            })];
+        }
+        const externalPrefix = 'ext:';
+        const isExternalModel = String(model || '').startsWith(externalPrefix);
+        const externalConfig = isExternalModel
+            ? (() => {
+                const separator = String(model).indexOf(':', externalPrefix.length);
+                const providerId = separator < 0 ? '' : String(model).slice(externalPrefix.length, separator);
+                const modelName = separator < 0 ? '' : String(model).slice(separator + 1);
+                const provider = providers.find(item => item.id === providerId);
+                if (!provider || !parseProviderModels(provider).includes(modelName)) throw new Error('该外部模型配置已失效，请刷新模型列表');
+                return { provider, modelName };
+            })()
+            : null;
+        const provider = externalConfig?.provider;
+        const modelName = externalConfig?.modelName || model;
+        const isAnthropic = provider?.type === 'anthropic';
+        const targetUrl = !provider
+            ? `${OLLAMA_URL}/api/chat`
+            : providerEndpoint(provider.base_url, isAnthropic ? '/v1/messages' : '/chat/completions');
+        const externalMessages = payload.messages.filter(item => item.role !== 'system');
+        const requestPayload = !provider ? payload : isAnthropic
+            ? {
+                model: modelName,
+                system: payload.messages.filter(item => item.role === 'system').map(item => item.content).join('\n\n') || undefined,
+                messages: externalMessages,
+                temperature: options.temperature,
+                max_tokens: options.num_predict > 0 ? options.num_predict : 4096,
+                stream: true
             }
-            const ollamaRes = await fetch(targetUrl, {
+            : {
+                model: modelName,
+                messages: payload.messages,
+                temperature: options.temperature,
+                top_p: options.top_p,
+                max_tokens: options.num_predict > 0 ? options.num_predict : undefined,
+                stream: true
+            };
+        const requestHeaders = { 'Content-Type': 'application/json' };
+        if (provider && isAnthropic) {
+            requestHeaders['x-api-key'] = provider.api_key;
+            requestHeaders['anthropic-version'] = '2023-06-01';
+        } else if (provider) {
+            requestHeaders.Authorization = `Bearer ${provider.api_key}`;
+        }
+        const ollamaRes = await fetch(targetUrl, {
             method: 'POST',
-                headers: requestHeaders,
-                body: JSON.stringify(requestPayload),
-                ...(isExternalModel ? { dispatcher: externalProxyAgent } : {})
+            headers: requestHeaders,
+            body: JSON.stringify(requestPayload),
+            ...(provider ? { dispatcher: externalProxyAgent } : {})
         });
             if (!ollamaRes.ok) {
                 const errorBody = await ollamaRes.text();
@@ -251,11 +337,14 @@ app.post('/api/chat', authUser, async (req, res) => {
         let streamBuffer = '';
         const streamDecoder = new TextDecoder('utf-8');
         const processStreamLine = (line) => {
-            const content = isExternalModel
+            const content = provider
                 ? (() => {
                     const data = line.startsWith('data:') ? line.slice(5).trim() : '';
                     if (!data || data === '[DONE]') return '';
-                    try { return JSON.parse(data).choices?.[0]?.delta?.content || ''; } catch (e) { return ''; }
+                    try {
+                        const event = JSON.parse(data);
+                        return isAnthropic ? (event.type === 'content_block_delta' ? event.delta?.text || '' : '') : event.choices?.[0]?.delta?.content || '';
+                    } catch (e) { return ''; }
                 })()
                 : (() => {
                     try { return JSON.parse(line).message?.content || ''; } catch (e) { return ''; }
@@ -263,7 +352,7 @@ app.post('/api/chat', authUser, async (req, res) => {
             if (content) {
                 res.write(JSON.stringify({ message: { content } }) + '\n');
                 fullReply += content;
-            } else if (!isExternalModel && line.trim()) {
+            } else if (!provider && line.trim()) {
                 try {
                     const parsed = JSON.parse(line);
                     if (parsed.done) res.write(line + '\n');
@@ -293,6 +382,18 @@ app.get('/api/admin/settings', authUser, async (req, res) => {
     res.json(settings);
 });
 
+app.post('/api/admin/models', authUser, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ detail: 'Forbidden' });
+    try {
+        const provider = normalizeProvider(req.body || {});
+        if (!provider.api_key) return res.status(400).json({ detail: '请先填写 API Key' });
+        const models = await fetchProviderModels(provider);
+        res.json({ models });
+    } catch (err) {
+        res.status(502).json({ detail: err.message || '获取模型列表失败' });
+    }
+});
+
 app.post('/api/admin/settings', authUser, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ detail: 'Forbidden' });
     await dbRun(`UPDATE config SET value = ? WHERE key = 'global_system_prompt'`, [String(req.body.global_system_prompt || '')]);
@@ -301,10 +402,9 @@ app.post('/api/admin/settings', authUser, async (req, res) => {
             await dbRun(`UPDATE config SET value = ? WHERE key = ?`, [String(req.body[key]), key]);
         }
     }
-    for (const key of ['external_api_url', 'external_api_key', 'external_models']) {
-        if (req.body[key] !== undefined) {
-            await dbRun(`INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [key, String(req.body[key] || '')]);
-        }
+    if (req.body.providers !== undefined) {
+        const providers = Array.isArray(req.body.providers) ? req.body.providers.map(normalizeProvider) : [];
+        await dbRun(`INSERT INTO config (key, value) VALUES ('external_providers', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [JSON.stringify(providers)]);
     }
     res.json({ msg: '已保存全局设置' });
 });

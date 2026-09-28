@@ -157,7 +157,7 @@
                                   style="min-height: 44px;"></textarea>
                         <div class="composer-right-tools" @click.stop>
                             <button @click="toggleModelMenu" class="composer-model-trigger" :aria-expanded="modelMenuOpen ? 'true' : 'false'" type="button" aria-label="选择模型">
-                                <span class="composer-model-trigger-text">{{ selectedModel || '选择模型' }}</span>
+                                <span class="composer-model-trigger-text">{{ getSelectedModelLabel() || '选择模型' }}</span>
                                 <svg class="composer-model-trigger-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                     <path d="M5 7.5l5 5 5-5" />
                                 </svg>
@@ -165,7 +165,8 @@
                             <transition name="model-panel">
                                 <div v-if="modelMenuOpen" class="composer-model-panel">
                                     <button v-for="m in models" :key="m.name" type="button" @click="selectModel(m.name)" class="composer-model-option" :class="{ 'is-selected': selectedModel === m.name }">
-                                        <span class="composer-model-name">{{ m.name }}</span>
+                                        <span class="composer-model-name">{{ m.label || m.name }}</span>
+                                        <span v-if="m.provider" class="text-xs text-gray-400">{{ m.provider }}</span>
                                     </button>
                                 </div>
                             </transition>
@@ -258,6 +259,7 @@
                 const modelMenuOpen = ref(false);
                 const defaultModelName = 'qwen2.5:3b';
                 const getDefaultModel = () => models.value.find(model => model.name === defaultModelName)?.name || models.value[0]?.name || '';
+                const getSelectedModelLabel = () => models.value.find(model => model.name === selectedModel.value)?.label || selectedModel.value;
                 const toggleModelMenu = () => { modelMenuOpen.value = !modelMenuOpen.value; };
                 const closeModelMenu = () => { modelMenuOpen.value = false; };
                 const selectModel = (model) => { selectedModel.value = model; closeModelMenu(); };
@@ -445,6 +447,10 @@
                             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token.value },
                             body: JSON.stringify({ conv_id: conversationId, model: selectedModel.value, message: msgContent, regenerate })
                         });
+                        if (!res.ok) {
+                            const error = await res.json().catch(() => ({}));
+                            throw new Error(error.detail || `请求失败 (${res.status})`);
+                        }
 
                         const reader = res.body.getReader();
                         const decoder = new TextDecoder("utf-8");
@@ -471,6 +477,9 @@
                         }
                     } catch (e) {
                         console.error(e);
+                        if (currentConvId.value === conversationId && !conversationMessages[assistantIndex].content) {
+                            conversationMessages[assistantIndex].content = `请求失败：${e.message || '请检查 API 配置后重试。'}`;
+                        }
                     }
 
                     const generatedText = conversationMessages[assistantIndex].content;
@@ -487,7 +496,7 @@
 
                 const sendMessage = async () => {
                     if (!inputText.value.trim() || isGenerating.value) return;
-                    if (!selectedModel.value) return alert("请先选择或安装 Ollama 模型");
+                    if (!selectedModel.value) return alert("请先选择一个可用模型");
 
                     let conversationId = currentConvId.value;
                     if (!conversationId) {
@@ -608,7 +617,7 @@
 
                 return {
                     token, userRole, isLightTheme, isThemeTransitioning, toggleTheme, authForm, authAction, logout,
-                    models, selectedModel, convs, currentConvId, messages, inputText,
+                    models, selectedModel, getSelectedModelLabel, convs, currentConvId, messages, inputText,
                     modelMenuOpen, toggleModelMenu, closeModelMenu, selectModel,
                     newChat, loadChat, sendMessage, isGenerating, renderMarkdown,
                     regenerateMessage, copyMessage, copiedMessageIndex,

@@ -26,22 +26,48 @@
             <h2 class="text-lg font-semibold mb-2">全局系统提示词</h2>
             <p class="text-sm text-gray-400 mb-5">此内容会注入所有用户的新对话上下文。</p>
             <textarea v-model="settings.global_system_prompt" rows="10" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-4 focus:outline-none focus:border-blue-500 text-gray-200"></textarea>
-            <h2 class="text-lg font-semibold mt-8 mb-2">外部 Google AI API</h2>
-            <p class="text-sm text-gray-400 mb-5">服务端会通过固定代理请求此地址。Google AI Studio 推荐填写 OpenAI 兼容地址：<span class="text-gray-300">https://generativelanguage.googleapis.com/v1beta/openai</span></p>
-            <div class="grid grid-cols-1 gap-5">
-                <label class="block">
-                    <span class="block text-sm text-gray-300 mb-2">API 地址</span>
-                    <input v-model="settings.external_api_url" type="url" placeholder="https://generativelanguage.googleapis.com/v1beta/openai" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
-                </label>
-                <label class="block">
-                    <span class="block text-sm text-gray-300 mb-2">API Key</span>
-                    <input v-model="settings.external_api_key" type="password" autocomplete="off" placeholder="输入 Google AI API Key" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
-                </label>
-                <label class="block">
-                    <span class="block text-sm text-gray-300 mb-2">模型列表</span>
-                    <span class="block text-xs text-gray-500 mb-2">逗号分隔；留空使用内置 Gemini 模型列表。</span>
-                    <input v-model="settings.external_models" type="text" placeholder="gemini-2.5-pro,gemini-2.5-flash" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
-                </label>
+            <div class="flex items-center justify-between gap-4 mt-8 mb-2">
+                <h2 class="text-lg font-semibold">外部 API</h2>
+                <button @click="addProvider" type="button" class="px-3 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 transition">添加 API</button>
+            </div>
+            <p class="text-sm text-gray-400 mb-5">可配置多个服务商。GPT、DeepSeek、Gemini 等选择 OpenAI 兼容；Claude 选择 Anthropic。</p>
+            <div v-for="(provider, index) in settings.providers" :key="provider.id" class="border border-gray-700 rounded-lg p-4 mb-4">
+                <div class="flex items-center justify-between gap-3 mb-4">
+                    <span class="font-medium">API {{ index + 1 }}</span>
+                    <button @click="removeProvider(index)" type="button" class="text-sm text-red-400 hover:text-red-300">删除</button>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <label class="block">
+                        <span class="block text-sm text-gray-300 mb-2">显示名称</span>
+                        <input v-model="provider.name" type="text" placeholder="例如：OpenAI、DeepSeek、Claude" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                    </label>
+                    <label class="block">
+                        <span class="block text-sm text-gray-300 mb-2">接口类型</span>
+                        <select v-model="provider.type" @change="provider.base_url = provider.type === 'anthropic' ? 'https://api.anthropic.com' : ''" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                            <option value="openai">OpenAI 兼容（GPT / DeepSeek / Gemini 等）</option>
+                            <option value="anthropic">Anthropic（Claude）</option>
+                        </select>
+                    </label>
+                    <label class="block sm:col-span-2">
+                        <span class="block text-sm text-gray-300 mb-2">API 地址</span>
+                        <input v-model="provider.base_url" type="url" :placeholder="provider.type === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1'" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                    </label>
+                    <label class="block sm:col-span-2">
+                        <span class="block text-sm text-gray-300 mb-2">API Key</span>
+                        <input v-model="provider.api_key" type="password" autocomplete="off" placeholder="输入此服务商的 API Key" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                    </label>
+                    <label class="block sm:col-span-2">
+                        <span class="block text-sm text-gray-300 mb-2">模型列表</span>
+                        <span class="block text-xs text-gray-500 mb-2">可点击获取，或手动输入模型 ID，多个模型用逗号或换行分隔。</span>
+                        <textarea v-model="provider.models" rows="3" placeholder="gpt-4o, gpt-4.1" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200"></textarea>
+                    </label>
+                    <div class="sm:col-span-2 flex items-center gap-3">
+                        <button @click="fetchModels(provider)" :disabled="provider.loadingModels" type="button" class="px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 disabled:opacity-50 transition">
+                            {{ provider.loadingModels ? '获取中...' : '获取模型' }}
+                        </button>
+                        <span v-if="provider.modelStatus" class="text-sm text-gray-400">{{ provider.modelStatus }}</span>
+                    </div>
+                </div>
             </div>
             <h2 class="text-lg font-semibold mt-8 mb-2">模型生成参数</h2>
             <p class="text-sm text-gray-400 mb-5">参数会应用到所有用户的 Ollama 对话。</p>
@@ -67,7 +93,7 @@
             setup() {
                 const token = localStorage.getItem('chat_token') || '';
                 const role = localStorage.getItem('chat_role') || '';
-                const settings = ref({ global_system_prompt: '', external_api_url: '', external_api_key: '', external_models: '' });
+                const settings = ref({ global_system_prompt: '', providers: [] });
                 const optionFields = [
                     { key: 'temperature', label: '温度', help: '越高越有创造性，范围 0 到 2。', step: '0.1', min: '0', max: '2' },
                     { key: 'num_ctx', label: '上下文长度', help: '模型可读取的上下文 token 数。', step: '128', min: '128', max: '131072' },
@@ -88,13 +114,58 @@
 
                 const goHome = () => { window.location.href = '/'; };
 
+                const createProvider = (provider = {}) => ({
+                    id: provider.id || (crypto.randomUUID ? crypto.randomUUID() : `provider-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+                    name: provider.name || '',
+                    type: provider.type || 'openai',
+                    base_url: provider.base_url || '',
+                    api_key: provider.api_key || '',
+                    models: provider.models || '',
+                    loadingModels: false,
+                    modelStatus: ''
+                });
+
+                const addProvider = () => settings.value.providers.push(createProvider());
+                const removeProvider = (index) => settings.value.providers.splice(index, 1);
+
+                const fetchModels = async (provider) => {
+                    provider.loadingModels = true;
+                    provider.modelStatus = '';
+                    try {
+                        const res = await fetch('/api/admin/models', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+                            body: JSON.stringify(provider)
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || '获取失败');
+                        provider.models = [...new Set(data.models || [])].join(', ');
+                        provider.modelStatus = `已获取 ${data.models.length} 个模型`;
+                    } catch (error) {
+                        provider.modelStatus = error.message || '获取模型失败';
+                    } finally {
+                        provider.loadingModels = false;
+                    }
+                };
+
                 const loadSettings = async () => {
                     if (!token || role !== 'admin') return logout();
                     const res = await fetch('/api/admin/settings', {
                         headers: { Authorization: 'Bearer ' + token }
                     });
                     if (!res.ok) return logout();
-                    settings.value = await res.json();
+                    const loaded = await res.json();
+                    let providers = [];
+                    try { providers = JSON.parse(loaded.external_providers || '[]'); } catch (error) {}
+                    if (!providers.length && (loaded.external_api_url || loaded.external_api_key)) {
+                        providers.push({
+                            id: 'legacy-google', name: 'Google AI', type: 'openai',
+                            base_url: loaded.external_api_url || 'https://generativelanguage.googleapis.com/v1beta/openai',
+                            api_key: loaded.external_api_key || '',
+                            models: loaded.external_models || 'gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview'
+                        });
+                    }
+                    settings.value = { ...loaded, providers: providers.map(provider => createProvider(provider)) };
                     loading.value = false;
                 };
 
@@ -114,7 +185,7 @@
                 };
 
                 onMounted(loadSettings);
-                return { settings, optionFields, loading, saving, saveSettings, logout, goHome };
+                return { settings, optionFields, loading, saving, saveSettings, logout, goHome, addProvider, removeProvider, fetchModels };
             }
         }).mount('#app');
     </script>
