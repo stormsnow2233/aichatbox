@@ -79,6 +79,7 @@ async function initDB() {
     try { await dbRun(`ALTER TABLE conversations ADD COLUMN model TEXT`); } catch (err) {}
     await dbRun(`CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, conv_id INTEGER, role TEXT, content TEXT)`);
     await dbRun(`CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER PRIMARY KEY, personal_prompt TEXT NOT NULL DEFAULT '')`);
+    try { await dbRun(`ALTER TABLE user_settings ADD COLUMN enabled_models TEXT`); } catch (err) {}
     await dbRun(`CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`);
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('global_system_prompt', '你是一个有用的 AI 助手。')`);
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('external_api_url', '')`);
@@ -108,6 +109,9 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/admin.html', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
 
 app.post('/api/register', async (req, res) => {
+    if (req.body.registration_code !== '114514') {
+        return res.status(400).json({ detail: '注册验证码不正确' });
+    }
     try {
         await dbRun(`INSERT INTO users (username, password, role) VALUES (?, ?, 'user')`, [req.body.username, hashPassword(req.body.password)]);
         res.json({ msg: '注册成功' });
@@ -125,14 +129,26 @@ app.post('/api/login', async (req, res) => {
 });
 
 app.get('/api/user/settings', authUser, async (req, res) => {
-    const settings = await dbGet(`SELECT personal_prompt FROM user_settings WHERE user_id = ?`, [req.user.id]);
-    res.json({ personal_prompt: settings?.personal_prompt || '' });
+    const settings = await dbGet(`SELECT personal_prompt, enabled_models FROM user_settings WHERE user_id = ?`, [req.user.id]);
+    let enabledModels = null;
+    if (settings?.enabled_models) {
+        try { enabledModels = JSON.parse(settings.enabled_models); } catch (err) { enabledModels = null; }
+    }
+    res.json({ personal_prompt: settings?.personal_prompt || '', enabled_models: enabledModels });
 });
 
 app.post('/api/user/settings', authUser, async (req, res) => {
     const personalPrompt = String(req.body.personal_prompt || '').slice(0, 10000);
     await dbRun(`INSERT INTO user_settings (user_id, personal_prompt) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET personal_prompt = excluded.personal_prompt`, [req.user.id, personalPrompt]);
     res.json({ msg: '个人提示词已保存' });
+});
+
+app.post('/api/user/models', authUser, async (req, res) => {
+    const requestedModels = Array.isArray(req.body.models) ? req.body.models.map(String) : [];
+    const validModels = new Set((await getModelCatalog()).map(model => model.name));
+    const enabledModels = [...new Set(requestedModels.filter(model => validModels.has(model)))];
+    await dbRun(`INSERT INTO user_settings (user_id, enabled_models) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET enabled_models = excluded.enabled_models`, [req.user.id, JSON.stringify(enabledModels)]);
+    res.json({ msg: '模型偏好已保存', enabled_models: enabledModels });
 });
 
 function normalizeProvider(provider) {
@@ -152,6 +168,9 @@ function parseProviderModels(provider) {
     return provider.models.split(/[\n,，]/).map(model => model.trim()).filter(Boolean);
 }
 
+const nonChatModelPattern = /(?:^|[-_/.])(embedding|embed|rerank|re-rank|search|web-search|websearch|image|img|diffusion|flux|dall[-_]?e|imagen|cogview|seedream|kolors|tts|asr|whisper|transcription|speech|audio|video|ocr|moderation|classifier)(?:$|[-_/.])/i;
+const isChatModel = name => !nonChatModelPattern.test(name);
+
 function providerEndpoint(baseUrl, endpoint) {
     const base = String(baseUrl || '').trim().replace(/\/$/, '');
     if (!base) throw new Error('请填写 API 地址');
@@ -166,37 +185,75 @@ async function fetchProviderModels(provider) {
         ? { 'x-api-key': provider.api_key, 'anthropic-version': '2023-06-01' }
         : { Authorization: `Bearer ${provider.api_key}` };
     const response = await fetch(url, { headers, dispatcher: externalProxyAgent });
-    if (!response.ok) throw new Error(`模型列表请求失败 (${response.status}): ${(await response.text()).slice(0, 300)}`);
-    const data = await response.json();
-    return (data.data || data.models || []).map(item => typeof item === 'string' ? item : item.id || item.name).filter(Boolean);
+    const body = await response.text();
+    if (!response.ok) throw new Error(`模型列表请求失败 (${response.status}): ${body.slice(0, 300)}`);
+    let data;
+    try {
+        data = JSON.parse(body);
+    } catch (err) {
+        const contentType = response.headers.get('content-type') || '未知类型';
+        throw new Error(`模型接口返回的不是 JSON（${contentType}）。请填写 API 根地址，而不是服务商网页地址，并确认模型列表接口可用。`);
+    }
+    const models = (data.data || data.models || []).map(item => typeof item === 'string' ? item : item.id || item.name).filter(Boolean);
+    if (!models.length) throw new Error('接口未返回模型列表；请手动填写该服务商支持的模型 ID。');
+    return models;
 }
 
-app.get('/api/models', authUser, async (req, res) => {
+async function getModelCatalog() {
     let ollamaModels = [];
     try {
         const response = await fetch(`${OLLAMA_URL}/api/tags`);
         const data = await response.json();
-        ollamaModels = data.models || [];
+        ollamaModels = (data.models || []).map(model => ({
+            name: model.name,
+            label: model.name,
+            provider: 'Ollama',
+            default_enabled: true
+        }));
     } catch (err) {}
-    try {
-        const config = await dbAll(`SELECT key, value FROM config WHERE key IN ('external_providers', 'external_api_url', 'external_api_key', 'external_models')`);
-        const externalSettings = config.reduce((values, item) => ({ ...values, [item.key]: item.value }), {});
-        let providers = [];
-        if (externalSettings.external_providers) {
-            try { providers = JSON.parse(externalSettings.external_providers).map(normalizeProvider); } catch (err) {}
-        } else if (externalSettings.external_api_url || externalSettings.external_api_key) {
-            providers = [normalizeProvider({
-                id: 'legacy-google', name: 'Google AI', type: 'openai',
-                base_url: externalSettings.external_api_url || GOOGLE_API_URL,
-                api_key: externalSettings.external_api_key,
-                models: externalSettings.external_models || GOOGLE_MODELS.join(',')
-            })];
-        }
-        const externalModels = providers.filter(provider => provider.base_url && provider.api_key).flatMap(provider => parseProviderModels(provider).map(name => ({
-            name: `ext:${provider.id}:${name}`, label: name, provider: provider.name, external: true
+    const config = await dbAll(`SELECT key, value FROM config WHERE key IN ('external_providers', 'external_api_url', 'external_api_key', 'external_models')`);
+    const externalSettings = config.reduce((values, item) => ({ ...values, [item.key]: item.value }), {});
+    let providers = [];
+    if (externalSettings.external_providers) {
+        try { providers = JSON.parse(externalSettings.external_providers).map(normalizeProvider); } catch (err) {}
+    } else if (externalSettings.external_api_url || externalSettings.external_api_key) {
+        providers = [normalizeProvider({
+            id: 'legacy-google', name: 'Google AI', type: 'openai',
+            base_url: externalSettings.external_api_url || GOOGLE_API_URL,
+            api_key: externalSettings.external_api_key,
+            models: externalSettings.external_models || GOOGLE_MODELS.join(',')
+        })];
+    }
+    const externalModels = providers.filter(provider => provider.base_url && provider.api_key).flatMap(provider => parseProviderModels(provider)
+        .filter(isChatModel)
+        .map(name => ({
+            name: `ext:${provider.id}:${name}`,
+            label: name,
+            provider: provider.name,
+            external: true,
+            default_enabled: /^gemini[-/.]/i.test(name)
         })));
-        res.json({ models: [...ollamaModels, ...externalModels] });
-    } catch (err) { res.json({ models: ollamaModels }); }
+    return [...ollamaModels, ...externalModels].filter(model => model.name && isChatModel(model.name));
+}
+
+app.get('/api/models/catalog', authUser, async (req, res) => {
+    try { res.json({ models: await getModelCatalog() }); }
+    catch (err) { res.status(500).json({ detail: '读取模型目录失败' }); }
+});
+
+app.get('/api/models', authUser, async (req, res) => {
+    try {
+        const catalog = await getModelCatalog();
+        const settings = await dbGet(`SELECT enabled_models FROM user_settings WHERE user_id = ?`, [req.user.id]);
+        let enabledModels = null;
+        if (settings?.enabled_models) {
+            try { enabledModels = JSON.parse(settings.enabled_models); } catch (err) {}
+        }
+        const visibleModels = enabledModels === null
+            ? catalog.filter(model => model.default_enabled)
+            : catalog.filter(model => enabledModels.includes(model.name));
+        res.json({ models: visibleModels });
+    } catch (err) { res.json({ models: [] }); }
 });
 
 app.get('/api/conversations', authUser, async (req, res) => {

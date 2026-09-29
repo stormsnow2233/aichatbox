@@ -12,7 +12,24 @@
 </head>
 <body class="app-shell bg-gray-900 text-gray-100 h-screen font-sans overflow-hidden">
     <div id="app" class="h-full">
-        <div class="h-full flex flex-col" :class="{ 'theme-light': isLightTheme, 'theme-dark': !isLightTheme, 'theme-transition': isThemeTransitioning }" @touchstart="handleTouchStart" @touchend="handleTouchEnd">
+        <main v-if="showAccessGate" class="access-gate-screen">
+            <section class="access-gate-card" aria-labelledby="access-gate-title">
+                <div class="access-gate-mark" aria-hidden="true">A</div>
+                <p class="access-gate-eyebrow">AICHATBOX · ACCESS CHECK</p>
+                <h1 id="access-gate-title">进入工作台前，请完成验证</h1>
+                <p class="access-gate-description">{{ accessGateReason }}</p>
+                <div class="otp-digit-group" role="group" aria-label="六位访问码">
+                    <input v-for="(digit, index) in accessCode" :key="index" :ref="element => { if (element) accessCodeInputRefs[index] = element; }"
+                        :value="digit" @input="handleAccessCodeInput(index, $event)" @keydown="handleAccessCodeKeydown(index, $event)" @paste="handleAccessCodePaste"
+                        type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1" pattern="[0-9]*"
+                        :aria-label="`第 ${index + 1} 位访问码`" class="otp-digit-input">
+                </div>
+                    <p class="access-gate-hint">输入 114514 以验证，输入完整后自动进入主页。</p>
+                <p class="access-gate-error" aria-live="polite">{{ accessGateError }}</p>
+                <p class="access-gate-footnote">验证仅保存在此浏览器中</p>
+            </section>
+        </main>
+        <div v-else class="h-full flex flex-col" :class="{ 'theme-light': isLightTheme, 'theme-dark': !isLightTheme, 'theme-transition': isThemeTransitioning }" @touchstart="handleTouchStart" @touchend="handleTouchEnd">
         <!-- 登录/注册页 -->
         <div v-if="!token" class="auth-screen">
             <div class="auth-orbit auth-orbit-one"></div>
@@ -27,11 +44,18 @@
                     <input v-model="authForm.username" type="text" placeholder="输入用户名" class="auth-input">
                     <label>密码</label>
                     <input v-model="authForm.password" type="password" placeholder="输入密码" class="auth-input">
+                    <template v-if="isRegistering">
+                        <label for="registration-code">注册验证码</label>
+                        <input id="registration-code" v-model="registrationCode" @input="registrationCode = registrationCode.replace(/\D/g, '').slice(0, 6)"
+                            type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]*"
+                            placeholder="输入 114514" class="auth-input">
+                    </template>
                 </div>
                 <div class="auth-actions">
                     <button @click="authAction('/api/login')" class="primary-action">登录</button>
-                    <button @click="authAction('/api/register')" class="secondary-action">注册</button>
+                    <button @click="authAction('/api/register')" class="secondary-action">{{ isRegistering ? '确认注册' : '注册' }}</button>
                 </div>
+                <p v-if="authError" class="auth-error" role="alert">{{ authError }}</p>
                 <div class="auth-status"><span></span> 安全连接 · 数据保存在本地</div>
             </div>
         </div>
@@ -98,6 +122,7 @@
                             <span class="settings-text">设置</span>
                         </button>
                         <div v-if="settingsMenuOpen" class="settings-menu">
+                            <button @click="openModelSettings">模型管理</button>
                             <button @click="openUserPrompt">我的提示词</button>
                             <button @click="toggleTheme">{{ isLightTheme ? '暗色模式' : '亮色模式' }}</button>
                             <button v-if="userRole === 'admin'" @click="openAdmin">管理后台</button>
@@ -157,6 +182,7 @@
                                   style="min-height: 44px;"></textarea>
                         <div class="composer-right-tools" @click.stop>
                             <button @click="toggleModelMenu" class="composer-model-trigger" :aria-expanded="modelMenuOpen ? 'true' : 'false'" type="button" aria-label="选择模型">
+                                <span class="composer-model-mark" aria-hidden="true">AI</span>
                                 <span class="composer-model-trigger-text">{{ getSelectedModelLabel() || '选择模型' }}</span>
                                 <svg class="composer-model-trigger-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                     <path d="M5 7.5l5 5 5-5" />
@@ -164,10 +190,36 @@
                             </button>
                             <transition name="model-panel">
                                 <div v-if="modelMenuOpen" class="composer-model-panel">
-                                    <button v-for="m in models" :key="m.name" type="button" @click="selectModel(m.name)" class="composer-model-option" :class="{ 'is-selected': selectedModel === m.name }">
-                                        <span class="composer-model-name">{{ m.label || m.name }}</span>
-                                        <span v-if="m.provider" class="text-xs text-gray-400">{{ m.provider }}</span>
-                                    </button>
+                                    <div class="model-picker-heading">
+                                        <div>
+                                            <span class="model-picker-title">选择模型</span>
+                                            <span class="model-picker-subtitle">切换本次对话使用的模型</span>
+                                        </div>
+                                        <span class="model-picker-total">{{ models.length }}</span>
+                                    </div>
+                                    <label class="model-picker-search">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5" stroke-linecap="round"/></svg>
+                                        <input v-model="modelMenuSearch" @click.stop @keydown.esc.prevent="handleModelSearchEscape" type="search" placeholder="搜索模型或服务商" aria-label="搜索模型或服务商">
+                                        <kbd v-if="modelMenuSearch">ESC</kbd>
+                                    </label>
+                                    <div class="model-picker-list">
+                                        <section v-for="group in filteredModelGroups" :key="group.provider" class="model-picker-group">
+                                            <div class="model-picker-group-heading">
+                                                <span>{{ group.provider }}</span>
+                                                <span>{{ group.models.length }}</span>
+                                            </div>
+                                            <button v-for="m in group.models" :key="m.name" type="button" @click="selectModel(m.name)" class="composer-model-option" :class="{ 'is-selected': selectedModel === m.name }" :title="m.label || m.name">
+                                                <span class="model-option-indicator" aria-hidden="true"><span></span></span>
+                                                <span class="model-option-copy">
+                                                    <span class="composer-model-name">{{ m.label || m.name }}</span>
+                                                    <span class="model-option-id">{{ m.external ? '云端 API' : '本地运行' }}</span>
+                                                </span>
+                                                <svg v-if="selectedModel === m.name" class="model-option-check" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-label="当前模型"><path d="m4 10 4 4 8-8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                            </button>
+                                        </section>
+                                        <p v-if="!filteredModels.length" class="model-picker-empty">没有匹配的已启用模型</p>
+                                    </div>
+                                    <div class="model-picker-footer">显示 {{ filteredModels.length }} 个可用模型</div>
                                 </div>
                             </transition>
                         </div>
@@ -193,20 +245,106 @@
             </div>
         </div>
 
+        <div v-if="showModelSettings" class="model-settings-overlay fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" @click.self="showModelSettings = false">
+            <section class="model-settings-panel" role="dialog" aria-modal="true" aria-labelledby="model-settings-title">
+                <header class="model-settings-header">
+                    <div class="model-settings-heading">
+                        <span class="model-settings-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 20 8v8l-8 4.5L4 16V8l8-4.5Z"/><path d="m4.5 8.2 7.5 4.3 7.5-4.3M12 12.5v8"/></svg>
+                        </span>
+                        <div>
+                            <p class="model-settings-eyebrow">PERSONAL WORKSPACE</p>
+                            <h2 id="model-settings-title">模型管理</h2>
+                            <p class="model-settings-description">控制模型选择器中显示哪些模型</p>
+                        </div>
+                    </div>
+                    <button @click="showModelSettings = false" type="button" class="model-settings-close" aria-label="关闭">✕</button>
+                </header>
+                <div class="model-settings-summary">
+                    <div class="model-summary-count"><strong>{{ modelFilterCounts.enabled }}</strong><span>已启用</span></div>
+                    <span class="model-summary-divider"></span>
+                    <div class="model-summary-count"><strong>{{ modelCatalog.length }}</strong><span>可用对话模型</span></div>
+                    <span class="model-summary-spacer"></span>
+                </div>
+                <div class="model-settings-tools">
+                    <label class="model-settings-search">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5" stroke-linecap="round"/></svg>
+                        <input v-model="modelSettingsSearch" type="search" placeholder="搜索模型或服务商" aria-label="搜索模型或服务商">
+                    </label>
+                    <div class="model-settings-filter" role="tablist" aria-label="模型筛选">
+                        <button v-for="filter in modelSettingsFilters" :key="filter.key" @click="modelSettingsFilter = filter.key" type="button" role="tab" :aria-selected="modelSettingsFilter === filter.key" :class="{ 'is-active': modelSettingsFilter === filter.key }">
+                            {{ filter.label }} <span>{{ modelFilterCounts[filter.key] }}</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="model-bulk-actions">
+                    <span>{{ filteredCatalogModels.length }} 个结果</span>
+                    <div>
+                        <button @click="setFilteredModels(true)" type="button">启用筛选结果</button>
+                        <button @click="setFilteredModels(false)" type="button">停用筛选结果</button>
+                    </div>
+                </div>
+                <div class="model-settings-list">
+                    <section v-for="group in filteredCatalogGroups" :key="group.provider" class="model-settings-group">
+                        <header class="model-settings-group-heading">
+                            <span class="model-provider-monogram">{{ group.provider.slice(0, 1).toUpperCase() }}</span>
+                            <span class="model-provider-name">{{ group.provider }}</span>
+                            <span v-if="group.provider === 'Ollama'" class="model-provider-note">- 推荐使用 CPU 模型，推理快</span>
+                            <span class="model-provider-enabled">{{ group.enabledCount }} / {{ group.models.length }} 已启用</span>
+                        </header>
+                        <label v-for="model in group.models" :key="model.name" class="model-settings-row" :class="{ 'is-enabled': enabledModelSet.has(model.name) }">
+                            <input type="checkbox" :checked="enabledModelSet.has(model.name)" @change="toggleEnabledModel(model.name, $event.target.checked)">
+                            <span class="model-settings-row-copy">
+                                <span class="model-settings-row-name">{{ model.label || model.name }}</span>
+                                <span class="model-settings-row-id">{{ model.external ? '云端 API 模型' : 'Ollama 本地模型' }}</span>
+                            </span>
+                            <span v-if="model.default_enabled" class="model-default-tag">默认</span>
+                        </label>
+                    </section>
+                    <p v-if="!filteredCatalogGroups.length" class="model-settings-empty">没有符合条件的模型</p>
+                </div>
+                <footer class="model-settings-footer">
+                    <span>更改仅影响当前账号</span>
+                    <div>
+                        <button @click="showModelSettings = false" type="button" class="model-cancel-button">取消</button>
+                        <button @click="saveModelSettings" :disabled="savingModelSettings" type="button" class="model-save-button">{{ savingModelSettings ? '保存中...' : '保存设置' }}</button>
+                    </div>
+                </footer>
+            </section>
+        </div>
+
         </div>
     </div>
 
     <script>
-        const { createApp, ref, onMounted, onUnmounted, nextTick } = Vue;
+        const { createApp, ref, computed, onMounted, onUnmounted, nextTick } = Vue;
 
         createApp({
             setup() {
                 const token = ref(localStorage.getItem('chat_token') || '');
+                const accessCode = ref(Array(6).fill(''));
+                const accessCodeInputRefs = [];
+                const accessGateError = ref('');
+                const now = Date.now();
+                const refreshKey = 'chat_gate_refreshes';
+                let refreshes = [];
+                try { refreshes = JSON.parse(localStorage.getItem(refreshKey) || '[]'); } catch (error) {}
+                const navigation = performance.getEntriesByType('navigation')[0];
+                if (navigation?.type === 'reload') refreshes.push(now);
+                refreshes = refreshes.filter(time => now - time < 15000);
+                localStorage.setItem(refreshKey, JSON.stringify(refreshes));
+                const rapidRefresh = refreshes.length >= 3;
+                const showAccessGate = ref(rapidRefresh);
+                const accessGateReason = ref('检测到短时间内多次刷新，请完成验证。');
                 const userRole = ref(localStorage.getItem('chat_role') || '');
                 const isLightTheme = ref(localStorage.getItem('chat_theme') === 'light');
                 const isThemeTransitioning = ref(false);
                 const authForm = ref({ username: '', password: '' });
+                const isRegistering = ref(false);
+                const registrationCode = ref('');
+                const authError = ref('');
                 const models = ref([]);
+                const modelCatalog = ref([]);
                 const selectedModel = ref('');
                 const convs = ref([]);
                 const currentConvId = ref(null);
@@ -247,6 +385,26 @@
                 const generatingConversationId = ref(null);
                 const copiedMessageIndex = ref(null);
                 const showUserPrompt = ref(false);
+                const showModelSettings = ref(false);
+                const modelSettingsSearch = ref('');
+                const modelSettingsFilter = ref('all');
+                const modelSettingsFilters = [
+                    { key: 'all', label: '全部' },
+                    { key: 'enabled', label: '已启用' },
+                    { key: 'disabled', label: '未启用' }
+                ];
+                const modelMenuSearch = ref('');
+                const enabledModelNames = ref([]);
+                const enabledModelSet = computed(() => new Set(enabledModelNames.value));
+                const modelFilterCounts = computed(() => {
+                    let enabled = 0;
+                    for (const model of modelCatalog.value) {
+                        if (enabledModelSet.value.has(model.name)) enabled++;
+                    }
+                    const all = modelCatalog.value.length;
+                    return { all, enabled, disabled: all - enabled };
+                });
+                const savingModelSettings = ref(false);
                 const personalPrompt = ref('');
                 const expandedDeleteId = ref(null);
                 const deletingConversationId = ref(null);
@@ -260,9 +418,49 @@
                 const defaultModelName = 'qwen2.5:3b';
                 const getDefaultModel = () => models.value.find(model => model.name === defaultModelName)?.name || models.value[0]?.name || '';
                 const getSelectedModelLabel = () => models.value.find(model => model.name === selectedModel.value)?.label || selectedModel.value;
+                const filteredModels = computed(() => {
+                    const query = modelMenuSearch.value.trim().toLowerCase();
+                    return models.value.filter(model => !query || `${model.label || model.name} ${model.provider || ''}`.toLowerCase().includes(query));
+                });
+                const filteredModelGroups = computed(() => {
+                    const groups = new Map();
+                    for (const model of filteredModels.value) {
+                        const provider = model.provider || 'Ollama';
+                        if (!groups.has(provider)) groups.set(provider, []);
+                        groups.get(provider).push(model);
+                    }
+                    return [...groups].map(([provider, groupedModels]) => ({ provider, models: groupedModels }));
+                });
+                const filteredCatalogModels = computed(() => {
+                    const query = modelSettingsSearch.value.trim().toLowerCase();
+                    const selected = enabledModelSet.value;
+                    return modelCatalog.value.filter(model => {
+                        const isEnabled = selected.has(model.name);
+                        const matchesFilter = modelSettingsFilter.value === 'all'
+                            || (modelSettingsFilter.value === 'enabled' && isEnabled)
+                            || (modelSettingsFilter.value === 'disabled' && !isEnabled);
+                        return matchesFilter && (!query || `${model.label || model.name} ${model.provider || 'Ollama'}`.toLowerCase().includes(query));
+                    });
+                });
+                const filteredCatalogGroups = computed(() => {
+                    const groups = new Map();
+                    const selected = enabledModelSet.value;
+                    for (const model of filteredCatalogModels.value) {
+                        const provider = model.provider || 'Ollama';
+                        if (!groups.has(provider)) groups.set(provider, { provider, models: [], enabledCount: 0 });
+                        const group = groups.get(provider);
+                        group.models.push(model);
+                        if (selected.has(model.name)) group.enabledCount++;
+                    }
+                    return [...groups.values()];
+                });
                 const toggleModelMenu = () => { modelMenuOpen.value = !modelMenuOpen.value; };
                 const closeModelMenu = () => { modelMenuOpen.value = false; };
-                const selectModel = (model) => { selectedModel.value = model; closeModelMenu(); };
+                const handleModelSearchEscape = () => {
+                    if (modelMenuSearch.value) modelMenuSearch.value = '';
+                    else closeModelMenu();
+                };
+                const selectModel = (model) => { selectedModel.value = model; modelMenuSearch.value = ''; closeModelMenu(); };
                 const rotatePromptSuggestions = () => {
                     const previousPrompts = new Set(promptSuggestions.value);
                     const candidates = suggestionPool.filter(prompt => !previousPrompts.has(prompt));
@@ -301,12 +499,75 @@
                     return res;
                 });
 
+                const handleAccessCodeInput = (index, event) => {
+                    const digits = event.target.value.replace(/\D/g, '');
+                    const nextCode = [...accessCode.value];
+                    if (digits.length > 1) {
+                        for (let offset = 0; offset < digits.length && index + offset < nextCode.length; offset++) {
+                            nextCode[index + offset] = digits[offset];
+                        }
+                    } else {
+                        nextCode[index] = digits;
+                    }
+                    accessCode.value = nextCode;
+                    event.target.value = nextCode[index];
+                    if (digits && index < accessCodeInputRefs.length - 1) {
+                        accessCodeInputRefs[Math.min(index + digits.length, accessCodeInputRefs.length - 1)]?.focus();
+                    }
+                    if (nextCode.every(Boolean)) verifyAccessCode();
+                };
+
+                const handleAccessCodePaste = (event) => {
+                    const digits = event.clipboardData?.getData('text').replace(/\D/g, '').slice(0, 6) || '';
+                    if (!digits) return;
+                    event.preventDefault();
+                    accessCode.value = Array.from({ length: 6 }, (_, index) => digits[index] || '');
+                    nextTick(() => accessCodeInputRefs[Math.min(digits.length, 5)]?.focus());
+                    if (digits.length === 6) verifyAccessCode();
+                };
+
+                const handleAccessCodeKeydown = (index, event) => {
+                    if (event.key === 'Backspace' && !accessCode.value[index] && index > 0) {
+                        accessCodeInputRefs[index - 1]?.focus();
+                    } else if (event.key === 'ArrowLeft' && index > 0) {
+                        event.preventDefault();
+                        accessCodeInputRefs[index - 1]?.focus();
+                    } else if (event.key === 'ArrowRight' && index < accessCodeInputRefs.length - 1) {
+                        event.preventDefault();
+                        accessCodeInputRefs[index + 1]?.focus();
+                    }
+                };
+
+                const verifyAccessCode = () => {
+                    if (accessCode.value.join('') !== '114514') {
+                        accessGateError.value = '访问码不正确，请重试。';
+                        accessCode.value = Array(6).fill('');
+                        nextTick(() => accessCodeInputRefs[0]?.focus());
+                        return;
+                    }
+                    localStorage.setItem('chat_access_granted', 'true');
+                    localStorage.setItem(refreshKey, '[]');
+                    accessGateError.value = '';
+                    showAccessGate.value = false;
+                    if (token.value) initData();
+                };
+
                 const authAction = async (endpoint) => {
+                    if (endpoint === '/api/register' && !isRegistering.value) {
+                        isRegistering.value = true;
+                        authError.value = '';
+                        return;
+                    }
+                    if (endpoint === '/api/login') isRegistering.value = false;
                     if (!authForm.value.username || !authForm.value.password) return alert("请输入完整信息");
+                    if (endpoint === '/api/register' && registrationCode.value !== '114514') {
+                        authError.value = '注册验证码不正确，请输入 114514。';
+                        return;
+                    }
                     const res = await fetch(endpoint, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(authForm.value)
+                        body: JSON.stringify({ ...authForm.value, registration_code: registrationCode.value })
                     });
                     const data = await res.json();
                     if (res.ok && data.token) {
@@ -318,7 +579,7 @@
                     } else if (res.ok) {
                         alert(data.msg);
                     } else {
-                        alert(data.detail);
+                        authError.value = data.detail;
                     }
                 };
 
@@ -337,18 +598,25 @@
                 };
 
                 const initData = async () => {
-                    if (!token.value) return;
+                    if (!token.value || showAccessGate.value) return;
                     try {
                         const mRes = await fetchAuth('/api/models');
                         const mData = await mRes.json();
                         models.value = (mData.models || []).filter(model => model && model.name && model.name.trim());
                         selectedModel.value = getDefaultModel();
 
+                        const catalogRes = await fetchAuth('/api/models/catalog');
+                        const catalogData = await catalogRes.json();
+                        modelCatalog.value = catalogData.models || [];
+
                         const cRes = await fetchAuth('/api/conversations');
                         convs.value = await cRes.json();
                         const pRes = await fetchAuth('/api/user/settings');
                         const pData = await pRes.json();
                         personalPrompt.value = pData.personal_prompt || '';
+                        enabledModelNames.value = Array.isArray(pData.enabled_models)
+                            ? pData.enabled_models
+                            : modelCatalog.value.filter(model => model.default_enabled).map(model => model.name);
                     } catch (e) {}
                 };
 
@@ -569,6 +837,50 @@
 
                 const openUserPrompt = () => { showUserPrompt.value = true; };
 
+                const openModelSettings = () => {
+                    settingsMenuOpen.value = false;
+                    showModelSettings.value = true;
+                    modelSettingsSearch.value = '';
+                    modelSettingsFilter.value = 'all';
+                };
+
+                const toggleEnabledModel = (name, enabled) => {
+                    const selected = new Set(enabledModelNames.value);
+                    if (enabled) selected.add(name);
+                    else selected.delete(name);
+                    enabledModelNames.value = [...selected];
+                };
+
+                const setFilteredModels = (enabled) => {
+                    const selected = new Set(enabledModelNames.value);
+                    for (const model of filteredCatalogModels.value) {
+                        if (enabled) selected.add(model.name);
+                        else selected.delete(model.name);
+                    }
+                    enabledModelNames.value = [...selected];
+                };
+
+                const saveModelSettings = async () => {
+                    savingModelSettings.value = true;
+                    try {
+                        const res = await fetchAuth('/api/user/models', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ models: enabledModelNames.value })
+                        });
+                        if (!res.ok) throw new Error('保存失败');
+                        const modelRes = await fetchAuth('/api/models');
+                        const modelData = await modelRes.json();
+                        models.value = modelData.models || [];
+                        if (!models.value.some(model => model.name === selectedModel.value)) selectedModel.value = getDefaultModel();
+                        showModelSettings.value = false;
+                    } catch (error) {
+                        alert(error.message || '保存模型设置失败，请重试。');
+                    } finally {
+                        savingModelSettings.value = false;
+                    }
+                };
+
                 const saveUserPrompt = async () => {
                     const res = await fetchAuth('/api/user/settings', {
                         method: 'POST',
@@ -584,12 +896,13 @@
                 };
 
                 onMounted(() => {
+                    if (showAccessGate.value) nextTick(() => accessCodeInputRefs[0]?.focus());
                     rotatePromptSuggestions();
                     suggestionRotationTimer = window.setInterval(() => {
                         if (!messages.value.length) rotatePromptSuggestions();
                     }, 30000);
                     welcomeHeadlineTimer = window.setInterval(rotateWelcomeHeadline, 20000);
-                    initData();
+                    if (!showAccessGate.value) initData();
                     syncViewportHeight();
                     window.addEventListener('keydown', handleDeleteEscape);
                     window.visualViewport?.addEventListener('resize', syncViewportHeight);
@@ -616,12 +929,18 @@
                 });
 
                 return {
+                    showAccessGate, accessGateReason, accessGateError, accessCode, accessCodeInputRefs,
+                    handleAccessCodeInput, handleAccessCodePaste, handleAccessCodeKeydown, verifyAccessCode,
                     token, userRole, isLightTheme, isThemeTransitioning, toggleTheme, authForm, authAction, logout,
                     models, selectedModel, getSelectedModelLabel, convs, currentConvId, messages, inputText,
-                    modelMenuOpen, toggleModelMenu, closeModelMenu, selectModel,
+                    modelMenuOpen, toggleModelMenu, closeModelMenu, selectModel, filteredModelGroups, handleModelSearchEscape,
                     newChat, loadChat, sendMessage, isGenerating, renderMarkdown,
                     regenerateMessage, copyMessage, copiedMessageIndex,
                     openAdmin, showUserPrompt, personalPrompt, openUserPrompt, saveUserPrompt,
+                    showModelSettings, openModelSettings, modelCatalog, modelSettingsSearch, modelSettingsFilter, modelSettingsFilters, modelMenuSearch,
+                    enabledModelNames, enabledModelSet, modelFilterCounts, savingModelSettings, filteredModels, filteredCatalogModels,
+                    filteredCatalogGroups,
+                    toggleEnabledModel, setFilteredModels, saveModelSettings,
                     expandedDeleteId, deletingConversationId, completedDeleteId, toggleDeleteControl, cancelDelete, deleteConversation,
                     isSidebarOpen, toggleSidebar, closeSidebar, handleTouchStart, handleTouchEnd,
                     sidebarCollapsed, toggleSidebarCollapse, handleSidebarHeaderClick, settingsMenuOpen, toggleSettingsMenu, closeSettingsMenu,
