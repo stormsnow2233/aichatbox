@@ -41,14 +41,13 @@
                 <p class="auth-subtitle">把想法交给你的专属智能工作台</p>
                 <div class="auth-form">
                     <label>用户名</label>
-                    <input v-model="authForm.username" type="text" placeholder="输入用户名" class="auth-input">
+                    <input v-model="authForm.username" type="text" minlength="3" maxlength="32" autocomplete="username" placeholder="输入用户名" class="auth-input">
                     <label>密码</label>
                     <input v-model="authForm.password" type="password" placeholder="输入密码" class="auth-input">
                     <template v-if="isRegistering">
-                        <label for="registration-code">注册验证码</label>
-                        <input id="registration-code" v-model="registrationCode" @input="registrationCode = registrationCode.replace(/\D/g, '').slice(0, 6)"
-                            type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]*"
-                            placeholder="输入 114514" class="auth-input">
+                        <label for="registration-code">注册邀请码（可选）</label>
+                        <input id="registration-code" v-model="registrationCode" type="text" autocomplete="off" maxlength="128"
+                            placeholder="管理员设置邀请码时填写" class="auth-input">
                     </template>
                 </div>
                 <div class="auth-actions">
@@ -126,6 +125,7 @@
                             <button @click="openUserPrompt">我的提示词</button>
                             <button @click="toggleTheme">{{ isLightTheme ? '暗色模式' : '亮色模式' }}</button>
                             <button v-if="userRole === 'admin'" @click="openAdmin">管理后台</button>
+                            <button @click="logout">退出登录</button>
                         </div>
                     </div>
                 </div>
@@ -157,7 +157,7 @@
                                      :class="msg.role === 'user' ? 'bg-blue-600/10 border border-blue-500/20' : 'bg-gray-800 border border-gray-700'"
                                      >
                                     <div v-if="isGenerating && msg.role === 'assistant' && !msg.content" class="typing-indicator">
-                                        输入中<span>.</span><span>.</span><span>.</span>
+                                        思考中<span>.</span><span>.</span><span>.</span>
                                     </div>
                                     <div v-else v-html="renderMarkdown(msg.content)"></div>
                                 </div>
@@ -559,33 +559,49 @@
                         return;
                     }
                     if (endpoint === '/api/login') isRegistering.value = false;
-                    if (!authForm.value.username || !authForm.value.password) return alert("请输入完整信息");
-                    if (endpoint === '/api/register' && registrationCode.value !== '114514') {
-                        authError.value = '注册验证码不正确，请输入 114514。';
+                    const username = authForm.value.username.trim();
+                    if (!username || !authForm.value.password) {
+                        authError.value = '请输入完整的用户名和密码。';
                         return;
                     }
-                    const res = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ ...authForm.value, registration_code: registrationCode.value })
-                    });
-                    const data = await res.json();
-                    if (res.ok && data.token) {
-                        token.value = data.token;
-                        userRole.value = data.role;
-                        localStorage.setItem('chat_token', data.token);
-                        localStorage.setItem('chat_role', data.role);
-                        initData();
-                    } else if (res.ok) {
-                        alert(data.msg);
-                    } else {
-                        authError.value = data.detail;
+                    if (endpoint === '/api/register') {
+                        if (username.length < 3 || username.length > 32) {
+                            authError.value = '用户名长度需为 3 到 32 个字符。';
+                            return;
+                        }
+                        if (authForm.value.password.length < 8 || authForm.value.password.length > 128) {
+                            authError.value = '密码长度需为 8 到 128 个字符。';
+                            return;
+                        }
+                    }
+                    authError.value = '';
+                    try {
+                        const res = await fetch(endpoint, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ...authForm.value, username, registration_code: registrationCode.value })
+                        });
+                        const data = await res.json();
+                        if (res.ok && data.token) {
+                            token.value = data.token;
+                            userRole.value = data.role;
+                            localStorage.setItem('chat_token', data.token);
+                            localStorage.setItem('chat_role', data.role);
+                            initData();
+                        } else if (res.ok) {
+                            alert(data.msg);
+                        } else {
+                            authError.value = data.detail || '请求失败，请稍后重试。';
+                        }
+                    } catch (error) {
+                        authError.value = '无法连接服务，请检查服务状态后重试。';
                     }
                 };
 
                 const logout = () => {
                     token.value = '';
                     userRole.value = '';
+                    settingsMenuOpen.value = false;
                     localStorage.removeItem('chat_token');
                     localStorage.removeItem('chat_role');
                 };
@@ -932,6 +948,7 @@
                     showAccessGate, accessGateReason, accessGateError, accessCode, accessCodeInputRefs,
                     handleAccessCodeInput, handleAccessCodePaste, handleAccessCodeKeydown, verifyAccessCode,
                     token, userRole, isLightTheme, isThemeTransitioning, toggleTheme, authForm, authAction, logout,
+                    isRegistering, registrationCode, authError,
                     models, selectedModel, getSelectedModelLabel, convs, currentConvId, messages, inputText,
                     modelMenuOpen, toggleModelMenu, closeModelMenu, selectModel, filteredModelGroups, handleModelSearchEscape,
                     newChat, loadChat, sendMessage, isGenerating, renderMarkdown,

@@ -26,6 +26,16 @@
             <h2 class="text-lg font-semibold mb-2">全局系统提示词</h2>
             <p class="text-sm text-gray-400 mb-5">此内容会注入所有用户的新对话上下文。</p>
             <textarea v-model="settings.global_system_prompt" rows="10" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-4 focus:outline-none focus:border-blue-500 text-gray-200"></textarea>
+            <label class="block mt-6">
+                <span class="block text-sm text-gray-300 mb-2">外部 API 代理地址</span>
+                <input v-model="settings.proxy_url" type="url" placeholder="留空则直连，例如：http://127.0.0.1:7890" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                <span class="block text-xs text-gray-500 mt-2">用于外部 API 请求和获取模型；留空时不使用代理。</span>
+            </label>
+            <label class="block mt-6">
+                <span class="block text-sm text-gray-300 mb-2">注册邀请码</span>
+                <input v-model="settings.registration_code" type="password" autocomplete="new-password" maxlength="128" placeholder="留空则开放注册" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                <span class="block text-xs text-gray-500 mt-2">设置后注册必须填写该邀请码；清空并保存后恢复开放注册。</span>
+            </label>
             <div class="flex items-center justify-between gap-4 mt-8 mb-2">
                 <h2 class="text-lg font-semibold">外部 API</h2>
                 <button @click="addProvider" type="button" class="px-3 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 transition">添加 API</button>
@@ -135,7 +145,7 @@
                         const res = await fetch('/api/admin/models', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-                            body: JSON.stringify(provider)
+                            body: JSON.stringify({ ...provider, proxy_url: settings.value.proxy_url })
                         });
                         const responseText = await res.text();
                         let data;
@@ -171,7 +181,7 @@
                             models: loaded.external_models || 'gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview'
                         });
                     }
-                    settings.value = { ...loaded, providers: providers.map(provider => createProvider(provider)) };
+                    settings.value = { ...loaded, proxy_url: loaded.proxy_url || '', providers: providers.map(provider => createProvider(provider)) };
                     loading.value = false;
                 };
 

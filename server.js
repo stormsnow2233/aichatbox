@@ -1,11 +1,13 @@
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const crypto = require('crypto');
+const { promisify } = require('util');
 const fs = require('fs');
 const path = require('path');
 const { ProxyAgent } = require('undici');
 
 const app = express();
+const scrypt = promisify(crypto.scrypt);
 app.use(express.json());
 app.use(express.static(__dirname));
 app.disable('etag');
@@ -20,8 +22,8 @@ app.use((req, res, next) => {
 
 const OLLAMA_URL = 'http://localhost:11434';
 const GOOGLE_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
-const EXTERNAL_PROXY = 'http://10.88.202.78:50000';
-const externalProxyAgent = new ProxyAgent(EXTERNAL_PROXY);
+let externalProxyUrl = '';
+let externalProxyAgent;
 const GOOGLE_MODELS = [
     'gemini-3.5-flash',
     'gemini-3.5-flash-lite',
@@ -65,7 +67,23 @@ const dbRun = (sql, params = []) => new Promise((res, rej) => db.run(sql, params
 const dbGet = (sql, params = []) => new Promise((res, rej) => db.get(sql, params, (err, row) => err ? rej(err) : res(row)));
 const dbAll = (sql, params = []) => new Promise((res, rej) => db.all(sql, params, (err, rows) => err ? rej(err) : res(rows)));
 
-const hashPassword = (pwd) => crypto.createHash('sha256').update(pwd).digest('hex');
+const hashPassword = async (password) => {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = await scrypt(password, salt, 64);
+    return `scrypt$${salt}$${hash.toString('hex')}`;
+};
+const verifyPassword = async (password, encoded) => {
+    const parts = String(encoded || '').split('$');
+    if (parts.length === 3 && parts[0] === 'scrypt' && /^[a-f0-9]{32}$/i.test(parts[1]) && /^[a-f0-9]{128}$/i.test(parts[2])) {
+        const hash = await scrypt(password, parts[1], 64);
+        return crypto.timingSafeEqual(hash, Buffer.from(parts[2], 'hex'));
+    }
+    if (/^[a-f0-9]{64}$/i.test(encoded || '')) {
+        const legacyHash = Buffer.from(crypto.createHash('sha256').update(password).digest('hex'), 'hex');
+        return crypto.timingSafeEqual(legacyHash, Buffer.from(encoded, 'hex'));
+    }
+    return false;
+};
 const clampNumber = (value, min, max, fallback) => {
     const number = Number(value);
     return Number.isFinite(number) ? Math.min(Math.max(number, min), max) : fallback;
@@ -84,11 +102,13 @@ async function initDB() {
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('global_system_prompt', '你是一个有用的 AI 助手。')`);
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('external_api_url', '')`);
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('external_api_key', '')`);
+    await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('proxy_url', '')`);
+    await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('registration_code', '')`);
     for (const [key, value] of Object.entries(modelOptionDefaults)) {
         await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, [key, value]);
     }
     
-    const adminHash = hashPassword(adminConfig.admin_password);
+    const adminHash = await hashPassword(adminConfig.admin_password);
     await dbRun(`UPDATE users SET role = 'user' WHERE role = 'admin' AND username != ?`, [adminConfig.admin_username]);
     await dbRun(`INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, 'admin')`, [adminConfig.admin_username, adminHash]);
     await dbRun(`UPDATE users SET password = ?, role = 'admin' WHERE username = ?`, [adminHash, adminConfig.admin_username]);
@@ -109,20 +129,44 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/admin.html', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
 
 app.post('/api/register', async (req, res) => {
-    if (req.body.registration_code !== '114514') {
-        return res.status(400).json({ detail: '注册验证码不正确' });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const registrationSetting = await dbGet(`SELECT value FROM config WHERE key = 'registration_code'`);
+    const configuredCode = registrationSetting?.value || '';
+    if (configuredCode) {
+        const suppliedCode = typeof body.registration_code === 'string' ? Buffer.from(body.registration_code) : Buffer.alloc(0);
+        const expectedCode = Buffer.from(configuredCode);
+        if (suppliedCode.length !== expectedCode.length || !crypto.timingSafeEqual(suppliedCode, expectedCode)) {
+            return res.status(400).json({ detail: '注册邀请码不正确' });
+        }
+    }
+    const username = typeof body.username === 'string' ? body.username.trim() : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (username.length < 3 || username.length > 32 || /[\u0000-\u001f\u007f]/.test(username)) {
+        return res.status(400).json({ detail: '用户名长度需为 3 到 32 个字符，且不能包含控制字符' });
+    }
+    if (password.length < 8 || password.length > 128) {
+        return res.status(400).json({ detail: '密码长度需为 8 到 128 个字符' });
     }
     try {
-        await dbRun(`INSERT INTO users (username, password, role) VALUES (?, ?, 'user')`, [req.body.username, hashPassword(req.body.password)]);
+        await dbRun(`INSERT INTO users (username, password, role) VALUES (?, ?, 'user')`, [username, await hashPassword(password)]);
         res.json({ msg: '注册成功' });
     } catch (err) {
-        res.status(400).json({ detail: '用户名已存在' });
+        if (err.code?.startsWith('SQLITE_CONSTRAINT')) return res.status(409).json({ detail: '用户名已存在' });
+        console.error('Registration failed:', err.message);
+        res.status(500).json({ detail: '注册失败，请稍后重试' });
     }
 });
 
 app.post('/api/login', async (req, res) => {
-    const user = await dbGet(`SELECT id, username, role FROM users WHERE username = ? AND password = ?`, [req.body.username, hashPassword(req.body.password)]);
-    if (!user) return res.status(400).json({ detail: '账号或密码错误' });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (typeof body.username !== 'string' || typeof body.password !== 'string' || !body.username.trim() || !body.password) {
+        return res.status(400).json({ detail: '请输入完整的账号和密码' });
+    }
+    const user = await dbGet(`SELECT id, username, password, role FROM users WHERE username = ?`, [body.username.trim()]);
+    if (!user || !await verifyPassword(body.password, user.password)) return res.status(400).json({ detail: '账号或密码错误' });
+    if (!String(user.password).startsWith('scrypt$')) {
+        await dbRun(`UPDATE users SET password = ? WHERE id = ?`, [await hashPassword(body.password), user.id]);
+    }
     const token = crypto.randomBytes(32).toString('hex');
     await dbRun(`INSERT INTO tokens (token, user_id) VALUES (?, ?)`, [token, user.id]);
     res.json({ token, username: user.username, role: user.role });
@@ -179,12 +223,24 @@ function providerEndpoint(baseUrl, endpoint) {
     return `${base}${endpoint}`;
 }
 
-async function fetchProviderModels(provider) {
+function getExternalProxyAgent(proxyUrl) {
+    const url = String(proxyUrl || '').trim();
+    if (url !== externalProxyUrl) {
+        const previousAgent = externalProxyAgent;
+        externalProxyUrl = url;
+        externalProxyAgent = url ? new ProxyAgent(url) : undefined;
+        if (previousAgent) previousAgent.close().catch(() => {});
+    }
+    return externalProxyAgent;
+}
+
+async function fetchProviderModels(provider, proxyUrl) {
     const url = providerEndpoint(provider.base_url, provider.type === 'anthropic' ? '/v1/models' : '/models');
     const headers = provider.type === 'anthropic'
         ? { 'x-api-key': provider.api_key, 'anthropic-version': '2023-06-01' }
         : { Authorization: `Bearer ${provider.api_key}` };
-    const response = await fetch(url, { headers, dispatcher: externalProxyAgent });
+    const dispatcher = getExternalProxyAgent(proxyUrl);
+    const response = await fetch(url, { headers, ...(dispatcher ? { dispatcher } : {}) });
     const body = await response.text();
     if (!response.ok) throw new Error(`模型列表请求失败 (${response.status}): ${body.slice(0, 300)}`);
     let data;
@@ -306,7 +362,7 @@ app.post('/api/chat', authUser, async (req, res) => {
 
     const history = await dbAll(`SELECT role, content FROM messages WHERE conv_id = ? ORDER BY id ASC`, [conv_id]);
     const userSettings = await dbGet(`SELECT personal_prompt FROM user_settings WHERE user_id = ?`, [req.user.id]);
-    const config = await dbAll(`SELECT key, value FROM config WHERE key IN ('global_system_prompt', 'external_providers', 'external_api_url', 'external_api_key', 'external_models', ${Object.keys(modelOptionDefaults).map(() => '?').join(', ')})`, Object.keys(modelOptionDefaults));
+    const config = await dbAll(`SELECT key, value FROM config WHERE key IN ('global_system_prompt', 'external_providers', 'external_api_url', 'external_api_key', 'external_models', 'proxy_url', ${Object.keys(modelOptionDefaults).map(() => '?').join(', ')})`, Object.keys(modelOptionDefaults));
     const settings = config.reduce((values, item) => ({ ...values, [item.key]: item.value }), {});
     const options = {
         temperature: clampNumber(settings.temperature, 0, 2, 0.7),
@@ -378,11 +434,12 @@ app.post('/api/chat', authUser, async (req, res) => {
         } else if (provider) {
             requestHeaders.Authorization = `Bearer ${provider.api_key}`;
         }
+        const dispatcher = provider ? getExternalProxyAgent(settings.proxy_url) : undefined;
         const ollamaRes = await fetch(targetUrl, {
             method: 'POST',
             headers: requestHeaders,
             body: JSON.stringify(requestPayload),
-            ...(provider ? { dispatcher: externalProxyAgent } : {})
+            ...(provider && dispatcher ? { dispatcher } : {})
         });
             if (!ollamaRes.ok) {
                 const errorBody = await ollamaRes.text();
@@ -444,7 +501,7 @@ app.post('/api/admin/models', authUser, async (req, res) => {
     try {
         const provider = normalizeProvider(req.body || {});
         if (!provider.api_key) return res.status(400).json({ detail: '请先填写 API Key' });
-        const models = await fetchProviderModels(provider);
+        const models = await fetchProviderModels(provider, req.body.proxy_url);
         res.json({ models });
     } catch (err) {
         res.status(502).json({ detail: err.message || '获取模型列表失败' });
@@ -454,6 +511,8 @@ app.post('/api/admin/models', authUser, async (req, res) => {
 app.post('/api/admin/settings', authUser, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ detail: 'Forbidden' });
     await dbRun(`UPDATE config SET value = ? WHERE key = 'global_system_prompt'`, [String(req.body.global_system_prompt || '')]);
+    await dbRun(`INSERT INTO config (key, value) VALUES ('proxy_url', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(req.body.proxy_url || '').trim().slice(0, 500)]);
+    await dbRun(`INSERT INTO config (key, value) VALUES ('registration_code', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(req.body.registration_code || '').trim().slice(0, 128)]);
     for (const key of Object.keys(modelOptionDefaults)) {
         if (req.body[key] !== undefined) {
             await dbRun(`UPDATE config SET value = ? WHERE key = ?`, [String(req.body[key]), key]);
