@@ -91,7 +91,9 @@ const clampNumber = (value, min, max, fallback) => {
 const clampInteger = (value, min, max, fallback) => Math.trunc(clampNumber(value, min, max, fallback));
 
 async function initDB() {
-    await dbRun(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, role TEXT)`);
+    await dbRun(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, role TEXT, external_id TEXT)`);
+    try { await dbRun(`ALTER TABLE users ADD COLUMN external_id TEXT`); } catch (err) {}
+    await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_external_id ON users (external_id)`);
     await dbRun(`CREATE TABLE IF NOT EXISTS tokens (token TEXT PRIMARY KEY, user_id INTEGER)`);
     await dbRun(`CREATE TABLE IF NOT EXISTS conversations (id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT, model TEXT)`);
     try { await dbRun(`ALTER TABLE conversations ADD COLUMN model TEXT`); } catch (err) {}
@@ -103,7 +105,6 @@ async function initDB() {
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('external_api_url', '')`);
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('external_api_key', '')`);
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('proxy_url', '')`);
-    await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('registration_code', '')`);
     for (const [key, value] of Object.entries(modelOptionDefaults)) {
         await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, [key, value]);
     }
@@ -113,57 +114,49 @@ async function initDB() {
     await dbRun(`INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, 'admin')`, [adminConfig.admin_username, adminHash]);
     await dbRun(`UPDATE users SET password = ?, role = 'admin' WHERE username = ?`, [adminHash, adminConfig.admin_username]);
 }
-initDB();
+const dbReady = initDB();
 
 async function authUser(req, res, next) {
+    await dbReady;
     const auth = req.headers.authorization;
-    if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ detail: 'Unauthorized' });
-    const token = auth.split(' ')[1];
-    const user = await dbGet(`SELECT u.* FROM users u JOIN tokens t ON u.id = t.user_id WHERE t.token = ?`, [token]);
-    if (!user) return res.status(401).json({ detail: 'Unauthorized' });
-    req.user = user;
-    next();
+    if (auth) {
+        if (!auth.startsWith('Bearer ')) return res.status(401).json({ detail: 'Unauthorized' });
+        const token = auth.split(' ')[1];
+        const user = await dbGet(`SELECT u.* FROM users u JOIN tokens t ON u.id = t.user_id WHERE t.token = ? AND u.role = 'admin'`, [token]);
+        if (!user) return res.status(401).json({ detail: 'Unauthorized' });
+        req.user = user;
+        return next();
+    }
+
+    let externalId = '';
+    try {
+        externalId = typeof req.headers['x-user-id'] === 'string' ? decodeURIComponent(req.headers['x-user-id']) : '';
+    } catch (err) {
+        return res.status(400).json({ detail: 'userid 参数格式无效' });
+    }
+    if (!externalId.trim() || externalId.length > 128 || /[\u0000-\u001f\u007f]/.test(externalId)) {
+        return res.status(400).json({ detail: '请使用包含有效 userid 参数的网址打开 Chatbox' });
+    }
+    const username = `injected_${crypto.createHash('sha256').update(externalId).digest('hex')}`;
+    await dbRun(`INSERT OR IGNORE INTO users (username, password, role, external_id) VALUES (?, NULL, 'user', ?)`, [username, externalId]);
+    req.user = await dbGet(`SELECT * FROM users WHERE external_id = ?`, [externalId]);
+    if (!req.user) return res.status(500).json({ detail: '创建用户失败' });
+    return next();
 }
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/admin.html', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
 
-app.post('/api/register', async (req, res) => {
-    const body = req.body && typeof req.body === 'object' ? req.body : {};
-    const registrationSetting = await dbGet(`SELECT value FROM config WHERE key = 'registration_code'`);
-    const configuredCode = registrationSetting?.value || '';
-    if (configuredCode) {
-        const suppliedCode = typeof body.registration_code === 'string' ? Buffer.from(body.registration_code) : Buffer.alloc(0);
-        const expectedCode = Buffer.from(configuredCode);
-        if (suppliedCode.length !== expectedCode.length || !crypto.timingSafeEqual(suppliedCode, expectedCode)) {
-            return res.status(400).json({ detail: '注册邀请码不正确' });
-        }
-    }
-    const username = typeof body.username === 'string' ? body.username.trim() : '';
-    const password = typeof body.password === 'string' ? body.password : '';
-    if (username.length < 3 || username.length > 32 || /[\u0000-\u001f\u007f]/.test(username)) {
-        return res.status(400).json({ detail: '用户名长度需为 3 到 32 个字符，且不能包含控制字符' });
-    }
-    if (password.length < 8 || password.length > 128) {
-        return res.status(400).json({ detail: '密码长度需为 8 到 128 个字符' });
-    }
-    try {
-        await dbRun(`INSERT INTO users (username, password, role) VALUES (?, ?, 'user')`, [username, await hashPassword(password)]);
-        res.json({ msg: '注册成功' });
-    } catch (err) {
-        if (err.code?.startsWith('SQLITE_CONSTRAINT')) return res.status(409).json({ detail: '用户名已存在' });
-        console.error('Registration failed:', err.message);
-        res.status(500).json({ detail: '注册失败，请稍后重试' });
-    }
-});
-
 app.post('/api/login', async (req, res) => {
+    await dbReady;
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     if (typeof body.username !== 'string' || typeof body.password !== 'string' || !body.username.trim() || !body.password) {
         return res.status(400).json({ detail: '请输入完整的账号和密码' });
     }
     const user = await dbGet(`SELECT id, username, password, role FROM users WHERE username = ?`, [body.username.trim()]);
-    if (!user || !await verifyPassword(body.password, user.password)) return res.status(400).json({ detail: '账号或密码错误' });
+    if (!user || user.role !== 'admin' || !await verifyPassword(body.password, user.password)) {
+        return res.status(400).json({ detail: '管理员账号或密码错误' });
+    }
     if (!String(user.password).startsWith('scrypt$')) {
         await dbRun(`UPDATE users SET password = ? WHERE id = ?`, [await hashPassword(body.password), user.id]);
     }
@@ -512,7 +505,6 @@ app.post('/api/admin/settings', authUser, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ detail: 'Forbidden' });
     await dbRun(`UPDATE config SET value = ? WHERE key = 'global_system_prompt'`, [String(req.body.global_system_prompt || '')]);
     await dbRun(`INSERT INTO config (key, value) VALUES ('proxy_url', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(req.body.proxy_url || '').trim().slice(0, 500)]);
-    await dbRun(`INSERT INTO config (key, value) VALUES ('registration_code', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(req.body.registration_code || '').trim().slice(0, 128)]);
     for (const key of Object.keys(modelOptionDefaults)) {
         if (req.body[key] !== undefined) {
             await dbRun(`UPDATE config SET value = ? WHERE key = ?`, [String(req.body[key]), key]);

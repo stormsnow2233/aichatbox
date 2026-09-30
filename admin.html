@@ -17,11 +17,27 @@
             </div>
             <div class="flex gap-3">
                 <button @click="goHome" class="px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 transition">返回聊天</button>
-                <button @click="logout" class="px-4 py-2 rounded-lg text-gray-400 hover:text-red-400 transition">退出登录</button>
             </div>
         </header>
 
-        <div v-if="loading" class="text-gray-400">正在加载...</div>
+        <section v-if="!isAuthenticated" class="max-w-md mx-auto bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-xl">
+            <h2 class="text-lg font-semibold mb-5">管理员登录</h2>
+            <form @submit.prevent="loginAdmin" class="space-y-4">
+                <label class="block">
+                    <span class="block text-sm text-gray-300 mb-2">管理员账号</span>
+                    <input v-model="loginForm.username" type="text" autocomplete="username" required class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                </label>
+                <label class="block">
+                    <span class="block text-sm text-gray-300 mb-2">密码</span>
+                    <input v-model="loginForm.password" type="password" autocomplete="current-password" required class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                </label>
+                <p v-if="loginError" class="text-sm text-red-400" role="alert">{{ loginError }}</p>
+                <button type="submit" :disabled="loggingIn" class="w-full px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition">
+                    {{ loggingIn ? '登录中...' : '登录管理后台' }}
+                </button>
+            </form>
+        </section>
+        <div v-else-if="loading" class="text-gray-400">正在加载...</div>
         <section v-else class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-xl">
             <h2 class="text-lg font-semibold mb-2">全局系统提示词</h2>
             <p class="text-sm text-gray-400 mb-5">此内容会注入所有用户的新对话上下文。</p>
@@ -30,11 +46,6 @@
                 <span class="block text-sm text-gray-300 mb-2">外部 API 代理地址</span>
                 <input v-model="settings.proxy_url" type="url" placeholder="留空则直连，例如：http://127.0.0.1:7890" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
                 <span class="block text-xs text-gray-500 mt-2">用于外部 API 请求和获取模型；留空时不使用代理。</span>
-            </label>
-            <label class="block mt-6">
-                <span class="block text-sm text-gray-300 mb-2">注册邀请码</span>
-                <input v-model="settings.registration_code" type="password" autocomplete="new-password" maxlength="128" placeholder="留空则开放注册" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
-                <span class="block text-xs text-gray-500 mt-2">设置后注册必须填写该邀请码；清空并保存后恢复开放注册。</span>
             </label>
             <div class="flex items-center justify-between gap-4 mt-8 mb-2">
                 <h2 class="text-lg font-semibold">外部 API</h2>
@@ -97,12 +108,16 @@
     </div>
 
     <script>
-        const { createApp, ref, onMounted } = Vue;
+        const { createApp, ref, computed, onMounted } = Vue;
 
         createApp({
             setup() {
-                const token = localStorage.getItem('chat_token') || '';
-                const role = localStorage.getItem('chat_role') || '';
+                const token = ref(localStorage.getItem('chat_token') || '');
+                const role = ref(localStorage.getItem('chat_role') || '');
+                const isAuthenticated = computed(() => Boolean(token.value) && role.value === 'admin');
+                const loginForm = ref({ username: '', password: '' });
+                const loginError = ref('');
+                const loggingIn = ref(false);
                 const settings = ref({ global_system_prompt: '', providers: [] });
                 const optionFields = [
                     { key: 'temperature', label: '温度', help: '越高越有创造性，范围 0 到 2。', step: '0.1', min: '0', max: '2' },
@@ -116,13 +131,33 @@
                 const loading = ref(true);
                 const saving = ref(false);
 
-                const logout = () => {
-                    localStorage.removeItem('chat_token');
-                    localStorage.removeItem('chat_role');
-                    window.location.href = '/';
+                const loginAdmin = async () => {
+                    loginError.value = '';
+                    loggingIn.value = true;
+                    try {
+                        const res = await fetch('/api/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(loginForm.value)
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || '管理员登录失败。');
+                        token.value = data.token;
+                        role.value = data.role;
+                        localStorage.setItem('chat_token', data.token);
+                        localStorage.setItem('chat_role', data.role);
+                        await loadSettings();
+                    } catch (error) {
+                        loginError.value = error.message || '无法连接服务，请检查服务状态后重试。';
+                    } finally {
+                        loggingIn.value = false;
+                    }
                 };
 
-                const goHome = () => { window.location.href = '/'; };
+                const goHome = () => {
+                    const userId = new URLSearchParams(window.location.search).get('userid');
+                    window.location.href = userId ? `/?userid=${encodeURIComponent(userId)}` : '/';
+                };
 
                 const createProvider = (provider = {}) => ({
                     id: provider.id || (crypto.randomUUID ? crypto.randomUUID() : `provider-${Date.now()}-${Math.random().toString(16).slice(2)}`),
@@ -144,7 +179,7 @@
                     try {
                         const res = await fetch('/api/admin/models', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+                            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token.value },
                             body: JSON.stringify({ ...provider, proxy_url: settings.value.proxy_url })
                         });
                         const responseText = await res.text();
@@ -165,24 +200,39 @@
                 };
 
                 const loadSettings = async () => {
-                    if (!token || role !== 'admin') return logout();
-                    const res = await fetch('/api/admin/settings', {
-                        headers: { Authorization: 'Bearer ' + token }
-                    });
-                    if (!res.ok) return logout();
-                    const loaded = await res.json();
-                    let providers = [];
-                    try { providers = JSON.parse(loaded.external_providers || '[]'); } catch (error) {}
-                    if (!providers.length && (loaded.external_api_url || loaded.external_api_key)) {
-                        providers.push({
-                            id: 'legacy-google', name: 'Google AI', type: 'openai',
-                            base_url: loaded.external_api_url || 'https://generativelanguage.googleapis.com/v1beta/openai',
-                            api_key: loaded.external_api_key || '',
-                            models: loaded.external_models || 'gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview'
-                        });
+                    if (!isAuthenticated.value) {
+                        loading.value = false;
+                        return;
                     }
-                    settings.value = { ...loaded, proxy_url: loaded.proxy_url || '', providers: providers.map(provider => createProvider(provider)) };
-                    loading.value = false;
+                    try {
+                        const res = await fetch('/api/admin/settings', {
+                            headers: { Authorization: 'Bearer ' + token.value }
+                        });
+                        if (!res.ok) {
+                            token.value = '';
+                            role.value = '';
+                            localStorage.removeItem('chat_token');
+                            localStorage.removeItem('chat_role');
+                            loginError.value = '管理员会话已失效，请重新登录。';
+                            return;
+                        }
+                        const loaded = await res.json();
+                        let providers = [];
+                        try { providers = JSON.parse(loaded.external_providers || '[]'); } catch (error) {}
+                        if (!providers.length && (loaded.external_api_url || loaded.external_api_key)) {
+                            providers.push({
+                                id: 'legacy-google', name: 'Google AI', type: 'openai',
+                                base_url: loaded.external_api_url || 'https://generativelanguage.googleapis.com/v1beta/openai',
+                                api_key: loaded.external_api_key || '',
+                                models: loaded.external_models || 'gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3-flash-preview'
+                            });
+                        }
+                        settings.value = { ...loaded, proxy_url: loaded.proxy_url || '', providers: providers.map(provider => createProvider(provider)) };
+                    } catch (error) {
+                        loginError.value = error.message || '读取管理设置失败。';
+                    } finally {
+                        loading.value = false;
+                    }
                 };
 
                 const saveSettings = async () => {
@@ -191,7 +241,7 @@
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            Authorization: 'Bearer ' + token
+                            Authorization: 'Bearer ' + token.value
                         },
                         body: JSON.stringify(settings.value)
                     });
@@ -201,7 +251,7 @@
                 };
 
                 onMounted(loadSettings);
-                return { settings, optionFields, loading, saving, saveSettings, logout, goHome, addProvider, removeProvider, fetchModels };
+                return { settings, optionFields, loading, saving, saveSettings, goHome, addProvider, removeProvider, fetchModels, isAuthenticated, loginForm, loginError, loggingIn, loginAdmin };
             }
         }).mount('#app');
     </script>

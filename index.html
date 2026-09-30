@@ -30,36 +30,17 @@
             </section>
         </main>
         <div v-else class="h-full flex flex-col" :class="{ 'theme-light': isLightTheme, 'theme-dark': !isLightTheme, 'theme-transition': isThemeTransitioning }" @touchstart="handleTouchStart" @touchend="handleTouchEnd">
-        <!-- 登录/注册页 -->
-        <div v-if="!token" class="auth-screen">
+        <div v-if="!userId" class="auth-screen">
             <div class="auth-orbit auth-orbit-one"></div>
             <div class="auth-orbit auth-orbit-two"></div>
             <div class="auth-panel">
                 <div class="brand-mark brand-mark-large"><span>O</span></div>
                 <div class="auth-kicker">LOCAL INTELLIGENCE</div>
-                <h2>本地 AI 终端</h2>
-                <p class="auth-subtitle">把想法交给你的专属智能工作台</p>
-                <div class="auth-form">
-                    <label>用户名</label>
-                    <input v-model="authForm.username" type="text" minlength="3" maxlength="32" autocomplete="username" placeholder="输入用户名" class="auth-input">
-                    <label>密码</label>
-                    <input v-model="authForm.password" type="password" placeholder="输入密码" class="auth-input">
-                    <template v-if="isRegistering">
-                        <label for="registration-code">注册邀请码（可选）</label>
-                        <input id="registration-code" v-model="registrationCode" type="text" autocomplete="off" maxlength="128"
-                            placeholder="管理员设置邀请码时填写" class="auth-input">
-                    </template>
-                </div>
-                <div class="auth-actions">
-                    <button @click="authAction('/api/login')" class="primary-action">登录</button>
-                    <button @click="authAction('/api/register')" class="secondary-action">{{ isRegistering ? '确认注册' : '注册' }}</button>
-                </div>
-                <p v-if="authError" class="auth-error" role="alert">{{ authError }}</p>
-                <div class="auth-status"><span></span> 安全连接 · 数据保存在本地</div>
+                <h2>需要用户标识</h2>
+                <p class="auth-subtitle">请通过包含 <code>?userid=xxx</code> 的网址打开 Chatbox。</p>
             </div>
         </div>
 
-        <!-- 聊天主界面 -->
         <div v-else class="chat-app-shell">
             <button v-if="isSidebarOpen" class="sidebar-backdrop" type="button" aria-label="关闭侧边栏" @click="closeSidebar"></button>
             <aside class="gemini-sidebar" :class="{ 'is-collapsed': sidebarCollapsed, 'mobile-open': isSidebarOpen }">
@@ -124,8 +105,6 @@
                             <button @click="openModelSettings">模型管理</button>
                             <button @click="openUserPrompt">我的提示词</button>
                             <button @click="toggleTheme">{{ isLightTheme ? '暗色模式' : '亮色模式' }}</button>
-                            <button v-if="userRole === 'admin'" @click="openAdmin">管理后台</button>
-                            <button @click="logout">退出登录</button>
                         </div>
                     </div>
                 </div>
@@ -133,6 +112,7 @@
             </aside>
 
             <main class="chat-main-panel">
+                <p v-if="apiError" class="auth-error" role="alert">{{ apiError }}</p>
                 <button class="mobile-sidebar-button" type="button" aria-label="打开侧边栏" @click="toggleSidebar">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
                 </button>
@@ -321,7 +301,7 @@
 
         createApp({
             setup() {
-                const token = ref(localStorage.getItem('chat_token') || '');
+                const userId = new URLSearchParams(window.location.search).get('userid') || '';
                 const accessCode = ref(Array(6).fill(''));
                 const accessCodeInputRefs = [];
                 const accessGateError = ref('');
@@ -336,13 +316,9 @@
                 const rapidRefresh = refreshes.length >= 3;
                 const showAccessGate = ref(rapidRefresh);
                 const accessGateReason = ref('检测到短时间内多次刷新，请完成验证。');
-                const userRole = ref(localStorage.getItem('chat_role') || '');
                 const isLightTheme = ref(localStorage.getItem('chat_theme') === 'light');
                 const isThemeTransitioning = ref(false);
-                const authForm = ref({ username: '', password: '' });
-                const isRegistering = ref(false);
-                const registrationCode = ref('');
-                const authError = ref('');
+                const apiError = ref('');
                 const models = ref([]);
                 const modelCatalog = ref([]);
                 const selectedModel = ref('');
@@ -493,9 +469,13 @@
 
                 const fetchAuth = (url, opts) => fetch(url, {
                     ...opts,
-                    headers: { ...opts?.headers, 'Authorization': 'Bearer ' + token.value }
+                    headers: { ...opts?.headers, 'X-User-Id': encodeURIComponent(userId) }
                 }).then(res => {
-                    if (res.status === 401 || res.status === 403) { logout(); throw new Error('Auth failed'); }
+                    if (!res.ok) {
+                        return res.json().catch(() => ({})).then(data => {
+                            throw new Error(data.detail || `请求失败 (${res.status})`);
+                        });
+                    }
                     return res;
                 });
 
@@ -549,61 +529,7 @@
                     localStorage.setItem(refreshKey, '[]');
                     accessGateError.value = '';
                     showAccessGate.value = false;
-                    if (token.value) initData();
-                };
-
-                const authAction = async (endpoint) => {
-                    if (endpoint === '/api/register' && !isRegistering.value) {
-                        isRegistering.value = true;
-                        authError.value = '';
-                        return;
-                    }
-                    if (endpoint === '/api/login') isRegistering.value = false;
-                    const username = authForm.value.username.trim();
-                    if (!username || !authForm.value.password) {
-                        authError.value = '请输入完整的用户名和密码。';
-                        return;
-                    }
-                    if (endpoint === '/api/register') {
-                        if (username.length < 3 || username.length > 32) {
-                            authError.value = '用户名长度需为 3 到 32 个字符。';
-                            return;
-                        }
-                        if (authForm.value.password.length < 8 || authForm.value.password.length > 128) {
-                            authError.value = '密码长度需为 8 到 128 个字符。';
-                            return;
-                        }
-                    }
-                    authError.value = '';
-                    try {
-                        const res = await fetch(endpoint, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ ...authForm.value, username, registration_code: registrationCode.value })
-                        });
-                        const data = await res.json();
-                        if (res.ok && data.token) {
-                            token.value = data.token;
-                            userRole.value = data.role;
-                            localStorage.setItem('chat_token', data.token);
-                            localStorage.setItem('chat_role', data.role);
-                            initData();
-                        } else if (res.ok) {
-                            alert(data.msg);
-                        } else {
-                            authError.value = data.detail || '请求失败，请稍后重试。';
-                        }
-                    } catch (error) {
-                        authError.value = '无法连接服务，请检查服务状态后重试。';
-                    }
-                };
-
-                const logout = () => {
-                    token.value = '';
-                    userRole.value = '';
-                    settingsMenuOpen.value = false;
-                    localStorage.removeItem('chat_token');
-                    localStorage.removeItem('chat_role');
+                    if (userId) initData();
                 };
 
                 const toggleTheme = () => {
@@ -614,7 +540,8 @@
                 };
 
                 const initData = async () => {
-                    if (!token.value || showAccessGate.value) return;
+                    if (!userId || showAccessGate.value) return;
+                    apiError.value = '';
                     try {
                         const mRes = await fetchAuth('/api/models');
                         const mData = await mRes.json();
@@ -633,7 +560,9 @@
                         enabledModelNames.value = Array.isArray(pData.enabled_models)
                             ? pData.enabled_models
                             : modelCatalog.value.filter(model => model.default_enabled).map(model => model.name);
-                    } catch (e) {}
+                    } catch (error) {
+                        apiError.value = error.message || '加载用户数据失败，请重试。';
+                    }
                 };
 
                 const newChat = () => {
@@ -728,7 +657,7 @@
                     try {
                         const res = await fetch('/api/chat', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token.value },
+                            headers: { 'Content-Type': 'application/json', 'X-User-Id': encodeURIComponent(userId) },
                             body: JSON.stringify({ conv_id: conversationId, model: selectedModel.value, message: msgContent, regenerate })
                         });
                         if (!res.ok) {
@@ -849,8 +778,6 @@
 
                 const renderMarkdown = (text) => marked.parse(text || '');
 
-                const openAdmin = () => { window.location.href = '/admin.html'; };
-
                 const openUserPrompt = () => { showUserPrompt.value = true; };
 
                 const openModelSettings = () => {
@@ -947,13 +874,12 @@
                 return {
                     showAccessGate, accessGateReason, accessGateError, accessCode, accessCodeInputRefs,
                     handleAccessCodeInput, handleAccessCodePaste, handleAccessCodeKeydown, verifyAccessCode,
-                    token, userRole, isLightTheme, isThemeTransitioning, toggleTheme, authForm, authAction, logout,
-                    isRegistering, registrationCode, authError,
+                    userId, apiError, isLightTheme, isThemeTransitioning, toggleTheme,
                     models, selectedModel, getSelectedModelLabel, convs, currentConvId, messages, inputText,
                     modelMenuOpen, toggleModelMenu, closeModelMenu, selectModel, filteredModelGroups, handleModelSearchEscape,
                     newChat, loadChat, sendMessage, isGenerating, renderMarkdown,
                     regenerateMessage, copyMessage, copiedMessageIndex,
-                    openAdmin, showUserPrompt, personalPrompt, openUserPrompt, saveUserPrompt,
+                    showUserPrompt, personalPrompt, openUserPrompt, saveUserPrompt,
                     showModelSettings, openModelSettings, modelCatalog, modelSettingsSearch, modelSettingsFilter, modelSettingsFilters, modelMenuSearch,
                     enabledModelNames, enabledModelSet, modelFilterCounts, savingModelSettings, filteredModels, filteredCatalogModels,
                     filteredCatalogGroups,
