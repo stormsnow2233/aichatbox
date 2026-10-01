@@ -37,6 +37,19 @@
 .access-gate-eyebrow { margin: 0 0 10px; color: #94b5ad; font-size: 11px; font-weight: 700; letter-spacing: 1.4px; }
 .access-gate-card h1 { margin: 0; color: #f0f3f2; font-size: 22px; font-weight: 650; }
 .access-gate-description { min-height: 22px; margin: 10px 0 0; color: #a5b3b3; font-size: 14px; }
+.auth-form { display: grid; gap: 15px; margin-top: 24px; text-align: left; }
+.auth-field { display: grid; gap: 7px; color: #c5d1ce; font-size: 13px; }
+.auth-field input {
+    width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid rgba(185, 210, 207, .24);
+    border-radius: 7px; outline: none; background: #10191e; color: #eff5f2; font-size: 15px;
+}
+.auth-field input:focus { border-color: #82c4ad; box-shadow: 0 0 0 3px rgba(130, 196, 173, .14); }
+.auth-submit-button {
+    min-height: 44px; border: 1px solid #82c4ad; border-radius: 7px; background: #82c4ad;
+    color: #10201c; font-size: 14px; font-weight: 700; cursor: pointer;
+}
+.auth-submit-button:hover { background: #9bd3c1; }
+.auth-mode-toggle { margin-top: 18px; border: 0; background: transparent; color: #a1d3c4; font-size: 13px; cursor: pointer; }
 .otp-digit-group { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin: 28px 0 0; }
 .access-gate-hint { margin: 14px 0 0; color: #a5b3b3; font-size: 13px; }
 .otp-digit-input {
@@ -275,6 +288,7 @@ button, select, textarea, input { font: inherit; }
     flex-direction: column;
     gap: 8px;
     overflow-y: auto;
+    overflow-x: hidden;
     flex: 1;
     min-height: 0;
 }
@@ -296,32 +310,39 @@ button, select, textarea, input { font: inherit; }
     white-space: nowrap;
 }
 .recent-item.active, .recent-item:hover { background: rgba(17, 24, 39, .05); }
-.delete-control { position: relative; display: flex; align-items: center; flex: 0 0 32px; height: 32px; transition: flex-basis .28s cubic-bezier(.2,.8,.2,1); }
-.delete-control.is-open { flex-basis: 100px; }
-.delete-bin-button, .delete-action-confirm, .delete-action-cancel { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 32px; padding: 0; border: 0; border-radius: 8px; cursor: pointer; transition: color .2s ease, background .2s ease, opacity .2s ease, transform .2s ease; }
-.delete-bin-button { color: #8994a5; background: transparent; opacity: 0; }
-.delete-bin-button:hover, .delete-control.is-open .delete-bin-button { color: #e46770; background: rgba(226, 87, 100, .1); }
-.delete-bin-button svg, .delete-action-confirm svg, .delete-action-cancel svg { width: 17px; height: 17px; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.delete-control.is-open .delete-bin-lid { transform-origin: 17px 7px; animation: delete-lid-open .38s cubic-bezier(.2,.8,.2,1) both; }
-.delete-control.is-busy .delete-bin-button { color: #46b982; background: rgba(70, 185, 130, .12); }
-.delete-check-mark path { stroke-dasharray: 24; stroke-dashoffset: 24; animation: delete-check-draw .42s .08s ease forwards; }
-.delete-confirm-panel { position: absolute; z-index: 2; right: 0; display: flex; align-items: center; gap: 4px; width: 68px; height: 32px; padding: 0; border: 0; border-radius: 9px; background: var(--canvas, #fff); box-shadow: 0 5px 15px rgba(25, 35, 50, .12), inset 0 0 0 1px rgba(121, 137, 159, .18); }
-.delete-action-confirm { color: #23875b; background: rgba(53, 181, 119, .12); }
-.delete-action-confirm:hover { color: #fff; background: #2ca36d; transform: scale(1.04); }
-.delete-action-cancel { color: #7c8798; background: transparent; }
-.delete-action-cancel:hover { color: #c94954; background: rgba(217, 76, 87, .1); }
-.delete-panel-enter-active, .delete-panel-leave-active { transition: opacity .2s ease, transform .24s cubic-bezier(.2,.8,.2,1); }
-.delete-panel-enter-from, .delete-panel-leave-to { opacity: 0; transform: translateX(8px) scale(.96); }
+.delete-control { position: relative; display: flex; align-items: center; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 12px; transition: flex-basis .3s cubic-bezier(.32,.72,0,1), width .3s cubic-bezier(.32,.72,0,1), background .3s ease; }
+.delete-control.is-open { flex-basis: 92px; width: 92px; background: rgba(231, 231, 239, .8); }
+.theme-dark .delete-control.is-open { background: rgba(27, 27, 27, .8); }
+.delete-bin-button { position: relative; z-index: 3; display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 32px; padding: 0; border: 0; border-radius: 12px; cursor: pointer; color: #868593; background: transparent; opacity: 0; transition: transform .2s ease, opacity .2s ease, background .2s ease; }
+.delete-bin-button:hover { background: rgba(250, 250, 253, 1); box-shadow: 0 1px 3px rgba(0,0,0,0.08); transform: scale(1.03); }
+.theme-dark .delete-bin-button:hover { background: rgba(44, 44, 44, 1); box-shadow: 0 1.5px 4px rgba(0,0,0,0.25); }
+.delete-bin-button:active { transform: scale(0.9); }
+.delete-control.is-open .delete-bin-button { opacity: 1; }
+.delete-bin-button svg, .delete-action-confirm svg, .delete-action-cancel svg { width: 16px; height: 16px; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.delete-control.is-open .delete-bin-lid { transform-box: fill-box; transform-origin: left center; animation: delete-lid-open .6s cubic-bezier(.34,1.1,.64,1) forwards; }
+.delete-control.is-open .delete-bin-body { transform-box: fill-box; transform-origin: 50% 100%; animation: delete-bin-squash .56s cubic-bezier(.32,.72,0,1) forwards; }
+.delete-control.is-busy .delete-bin-button { color: #FF5F2E; background: transparent; }
+.delete-check-mark path { stroke-dasharray: 24; stroke-dashoffset: 24; animation: delete-check-draw .45s cubic-bezier(.32,.72,0,1) forwards; }
+.delete-confirm-panel { position: absolute; z-index: 2; right: 4px; display: flex; align-items: center; justify-content: flex-end; gap: 4px; width: 70px; height: 32px; padding: 0; border: 0; background: transparent; }
+.delete-action-confirm, .delete-action-cancel { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; color: #868593; background: transparent; transition: background .2s ease, transform .2s ease, color .2s ease; }
+.delete-action-confirm:hover, .delete-action-cancel:hover { background: rgba(250, 250, 253, 1); box-shadow: 0 1px 3px rgba(0,0,0,0.08); transform: scale(1.05); }
+.theme-dark .delete-action-confirm:hover, .theme-dark .delete-action-cancel:hover { background: rgba(44, 44, 44, 1); box-shadow: 0 1.5px 4px rgba(0,0,0,0.25); }
+.delete-action-confirm:active, .delete-action-cancel:active { transform: scale(0.85); }
+.delete-action-confirm svg { stroke: #FF5F2E; }
+.delete-panel-enter-active, .delete-panel-leave-active { transition: opacity .3s cubic-bezier(.32,.72,0,1), transform .3s cubic-bezier(.32,.72,0,1); }
+.delete-panel-enter-from, .delete-panel-leave-to { opacity: 0; transform: translateX(-6px); }
 .rareui-attribution { align-self: flex-end; margin: 6px 2px 0; color: #818b9b; font-size: 9px; text-decoration: none; transition: color .2s ease; }
 .rareui-attribution:hover { color: #5d6b80; text-decoration: underline; }
-.conversation-move { transition: transform .24s ease; }
-.conversation-leave-active { transition: opacity .24s ease, transform .24s ease; }
-.conversation-leave-to { opacity: 0; transform: translateX(-8px); }
-@keyframes delete-lid-open { from { transform: rotate(0); } to { transform: rotate(-35deg) translateY(-1px); } }
+.conversation-move { transition: transform .3s cubic-bezier(.32,.72,0,1); }
+.conversation-leave-active { transition: opacity .3s ease, transform .3s ease; }
+.conversation-leave-to { opacity: 0; transform: scale(0.9); }
+@keyframes delete-lid-open { 0% { transform: rotate(0); } 100% { transform: rotate(-35deg) translateY(-1px); } }
+@keyframes delete-bin-squash { 0% { transform: scaleY(1); } 100% { transform: scaleY(0.65); } }
 @keyframes delete-check-draw { to { stroke-dashoffset: 0; } }
 .recent-row:hover .delete-bin-button, .recent-row:focus-within .delete-bin-button { opacity: 1; }
 @media (hover: none) { .delete-bin-button { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .delete-control, .delete-panel-enter-active, .delete-panel-leave-active, .conversation-move, .conversation-leave-active { transition-duration: .01ms; } .delete-control.is-open .delete-bin-lid, .delete-check-mark path { animation-duration: .01ms; animation-delay: 0ms; } }
+
 .sidebar-footer {
     margin-top: auto;
     padding-top: 10px;
@@ -1048,3 +1069,27 @@ button, select, textarea, input { font: inherit; }
     .send-button { width: 38px; height: 38px; flex-basis: 38px; margin-left: 5px; }
     .composer-caption { font-size: 9px; }
 }
+.icon-fade-enter-active, .icon-fade-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+.icon-fade-enter-from, .icon-fade-leave-to { opacity: 0; transform: scale(0.8); }
+
+
+.rare-otp { position: relative; gap: 12px; }
+.rare-otp.status-error { animation: otp-shake 0.32s cubic-bezier(.36,.07,.19,.97) both; }
+@keyframes otp-shake { 10%, 90% { transform: translateX(-1px); } 20%, 80% { transform: translateX(2px); } 30%, 50%, 70% { transform: translateX(-4px); } 40%, 60% { transform: translateX(4px); } }
+.otp-cell { position: relative; width: 100%; aspect-ratio: 4 / 5; max-height: 64px; }
+.rare-otp-input { position: absolute; inset: 0; width: 100%; height: 100%; border: 1px solid rgba(185, 210, 207, .24); border-radius: 12px; background: #10191e; color: transparent !important; caret-color: transparent !important; z-index: 2; cursor: text; transition: border-color .2s ease, background .2s ease; }
+.rare-otp-input:focus { border-color: transparent; background: #14221f; outline: none; box-shadow: none; }
+.otp-digit-text { position: absolute; inset: 0; display: grid; place-items: center; z-index: 1; pointer-events: none; overflow: hidden; }
+.otp-char { font-size: 25px; font-weight: 600; color: #eff5f2; }
+.otp-ring { position: absolute; inset: -1px; border: 2px solid transparent; border-radius: 13px; z-index: 3; pointer-events: none; transition: border-color .45s ease-out; }
+.rare-otp.status-success .otp-ring { border-color: #82c4ad; }
+.rare-otp.status-error .otp-ring { border-color: #f1988d; transition-duration: 0.15s; }
+.otp-caret { position: absolute; top: 50%; left: 0; width: 2px; height: 35%; background: #eff5f2; border-radius: 1px; z-index: 4; pointer-events: none; opacity: 0; transition: transform 0.32s cubic-bezier(.34,1.1,.64,1), opacity 0.2s; animation: caret-blink 1s step-end infinite; }
+.otp-caret.is-visible { opacity: 1; }
+@keyframes caret-blink { 50% { opacity: 0; } }
+.otp-roll-enter-active { animation: otp-roll-in .35s cubic-bezier(.175, .885, .32, 1.275); }
+.otp-roll-leave-active { display: none; }
+@keyframes otp-roll-in { 0% { transform: translateY(12px) scale(0.8); opacity: 0; } 100% { transform: translateY(0) scale(1); opacity: 1; } }
+
+
+
