@@ -26,7 +26,7 @@
                             :aria-label="`第 ${index + 1} 位访问码`" class="otp-digit-input rare-otp-input">
                         <span class="otp-digit-text" aria-hidden="true">
                             <transition name="otp-roll">
-                                <span v-if="digit" :key="digit" class="otp-char">{{ digit }}</span>
+                                <span v-if="digit" :key="digit" class="otp-char">*</span>
                             </transition>
                         </span>
                         <div class="otp-ring" :style="{ transitionDelay: otpStatus === 'success' ? `${0.15 + index * 0.05}s` : '0s' }"></div>
@@ -38,7 +38,7 @@
             </section>
         </main>
         
-        <div v-else class="max-w-4xl mx-auto p-6 sm:p-10">
+        <div v-else class="max-w-6xl mx-auto p-6 sm:p-10">
             <header class="flex items-center justify-between border-b border-gray-700 pb-5 mb-6">
                 <div>
                     <p class="text-blue-400 text-sm mb-1">AI Chatbox</p>
@@ -50,13 +50,15 @@
                 </div>
             </header>
 
-            <div class="flex gap-4 mb-6 border-b border-gray-700 pb-2">
-                <button @click="activeTab = 'settings'" :class="{'text-blue-400 font-semibold border-b-2 border-blue-400 pb-2': activeTab === 'settings', 'text-gray-400 hover:text-gray-200 pb-2': activeTab !== 'settings'}">系统设置</button>
-                <button @click="activeTab = 'users'; loadUsers()" :class="{'text-blue-400 font-semibold border-b-2 border-blue-400 pb-2': activeTab === 'users', 'text-gray-400 hover:text-gray-200 pb-2': activeTab !== 'users'}">用户管理</button>
-            </div>
-
             <div v-if="loading" class="text-gray-400">正在加载...</div>
-            <section v-if="!loading && activeTab === 'settings'" class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-xl">
+            <div v-else class="admin-tab-layout">
+                <nav class="admin-tab-rail" aria-label="管理后台页面">
+                    <button @click="switchTab('settings')" :aria-current="activeTab === 'settings' ? 'page' : null" type="button">系统设置</button>
+                    <button @click="switchTab('users')" :aria-current="activeTab === 'users' ? 'page' : null" type="button">用户管理</button>
+                </nav>
+                <div class="admin-tab-content">
+                    <transition :name="tabTransition">
+            <section v-show="activeTab === 'settings'" :inert="activeTab !== 'settings'" :aria-hidden="activeTab !== 'settings'" class="admin-tab-panel bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-xl">
             <h2 class="text-lg font-semibold mb-2">全局系统提示词</h2>
             <p class="text-sm text-gray-400 mb-5">此内容会注入所有用户的新对话上下文。</p>
             <textarea v-model="settings.global_system_prompt" rows="10" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-4 focus:outline-none focus:border-blue-500 text-gray-200"></textarea>
@@ -67,8 +69,8 @@
             </label>
             <label class="block mt-6">
                 <span class="block text-sm text-gray-300 mb-2">后台安全访问码 (6位数字)</span>
-                <input v-model="settings.admin_access_code" type="password" autocomplete="new-password" maxlength="6" pattern="[0-9]*" placeholder="默认为 111111" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
-                <span class="block text-xs text-gray-500 mt-2">用于进入此管理页面的二次身份验证。</span>
+                <input v-model="settings.admin_access_code" type="password" inputmode="numeric" autocomplete="new-password" maxlength="6" pattern="[0-9]*" placeholder="留空则保持不变" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                <span class="block text-xs text-gray-500 mt-2">设置新的 6 位访问码；留空不修改。</span>
             </label>
             <div class="flex items-center justify-between gap-4 mt-8 mb-2">
                 <h2 class="text-lg font-semibold">外部 API</h2>
@@ -128,9 +130,32 @@
                 </button>
             </div>
         </section>
-
-        <section v-if="!loading && activeTab === 'users'" class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-xl">
-            <h2 class="text-lg font-semibold mb-4">用户列表 ({{ users.length }})</h2>
+                    </transition>
+                    <transition :name="tabTransition">
+        <section v-show="activeTab === 'users'" :inert="activeTab !== 'users'" :aria-hidden="activeTab !== 'users'" class="admin-tab-panel bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-xl">
+            <div class="flex items-center justify-between gap-4 mb-4">
+                <div>
+                    <h2 class="text-lg font-semibold">用户列表 ({{ users.length }})</h2>
+                    <p class="mt-1 text-sm text-gray-400">累计对话数：<span class="font-semibold text-gray-100">{{ userStats.conversations }}</span></p>
+                </div>
+                <button @click="loadUsers" :disabled="usersLoading" type="button" class="px-3 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 disabled:opacity-50 transition">{{ usersLoading ? '加载中...' : '刷新数据' }}</button>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+                <div class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-3">
+                    <p class="text-xs text-gray-400">用户总数</p>
+                    <p class="mt-1 text-2xl font-semibold text-gray-100">{{ userStats.totalUsers }}</p>
+                </div>
+                <div class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-3">
+                    <p class="text-xs text-gray-400">角色分布</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-100">{{ userStats.admins }} 管理员 <span class="text-gray-500">/</span> {{ userStats.members }} 普通用户</p>
+                </div>
+                <div class="rounded-lg border border-gray-700 bg-gray-900 px-4 py-3">
+                    <p class="text-xs text-gray-400">累计对话数</p>
+                    <p class="mt-1 text-2xl font-semibold text-gray-100">{{ userStats.conversations }}</p>
+                </div>
+            </div>
+            <p v-if="usersLoading" class="mb-4 text-sm text-gray-400">正在加载用户数据...</p>
+            <p v-if="usersError" class="mb-4 text-sm text-red-300" role="alert">{{ usersError }}</p>
             <div class="overflow-x-auto">
                 <table class="w-full text-left text-sm text-gray-300 table-fixed min-w-[600px]">
                     <thead class="text-xs text-gray-400 uppercase bg-gray-900 border-b border-gray-700">
@@ -158,6 +183,9 @@
                 <div v-if="users.length === 0 && !usersLoading" class="text-center text-gray-500 py-6">暂无用户数据</div>
             </div>
         </section>
+                    </transition>
+            </div>
+            </div>
         </div>
     </div>
 
@@ -166,16 +194,23 @@
 
         createApp({
             setup() {
-                const token = localStorage.getItem('chat_token') || '';
-                const role = localStorage.getItem('chat_role') || '';
+                const token = new URLSearchParams(window.location.search).get('userid') || '';
+                const role = token === 'admin' ? 'admin' : 'user';
                 const settings = ref({ global_system_prompt: '', providers: [], admin_access_code: '' });
-                const verified = ref(sessionStorage.getItem('admin_verified') === 'true');
+                const verified = ref(false);
+                const adminVerification = ref('');
                 const accessCode = ref(Array(6).fill(''));
                 const accessCodeInputRefs = [];
                 const focusedIndex = ref(null);
                 const accessGateError = ref('');
                 const otpStatus = ref('idle');
                 const caretX = ref(0);
+
+                const adminHeaders = (headers = {}) => ({
+                    ...headers,
+                    Authorization: 'Bearer ' + token,
+                    'X-Admin-Verification': adminVerification.value
+                });
 
                 watch(focusedIndex, (idx) => {
                     if (idx !== null) {
@@ -240,7 +275,8 @@
                         const data = await res.json();
                         if (res.ok && data.success) {
                             otpStatus.value = 'success';
-                            sessionStorage.setItem('admin_verified', 'true');
+                            adminVerification.value = data.verification_token;
+                            sessionStorage.setItem('admin_verification', data.verification_token);
                             setTimeout(() => {
                                 verified.value = true;
                                 accessGateError.value = '';
@@ -279,16 +315,11 @@
                 const saving = ref(false);
 
                 const logout = () => {
-                    if (token) fetch('/api/logout', { method: 'POST', keepalive: true, headers: { Authorization: 'Bearer ' + token } }).catch(() => {});
-                    localStorage.removeItem('chat_token');
-                    localStorage.removeItem('chat_role');
-                    sessionStorage.removeItem('chat_token');
-                    sessionStorage.removeItem('chat_role');
-                    sessionStorage.removeItem('admin_verified');
+                    sessionStorage.removeItem('admin_verification');
                     window.location.href = '/';
                 };
 
-                const goHome = () => { window.location.href = '/'; };
+                const goHome = () => { window.location.href = '/?userid=' + encodeURIComponent(token); };
 
                 const createProvider = (provider = {}) => ({
                     id: provider.id || (crypto.randomUUID ? crypto.randomUUID() : `provider-${Date.now()}-${Math.random().toString(16).slice(2)}`),
@@ -310,7 +341,7 @@
                     try {
                         const res = await fetch('/api/admin/models', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+                            headers: adminHeaders({ 'Content-Type': 'application/json' }),
                             body: JSON.stringify({ ...provider, proxy_url: settings.value.proxy_url })
                         });
                         const responseText = await res.text();
@@ -331,31 +362,55 @@
                 };
 
                 const activeTab = ref('settings');
+                const tabTransition = ref('tab-slide-next');
                 const users = ref([]);
                 const usersLoading = ref(false);
+                const usersError = ref('');
+                const userStats = ref({ totalUsers: 0, admins: 0, members: 0, conversations: 0 });
 
                 const loadUsers = async () => {
                     usersLoading.value = true;
+                    usersError.value = '';
                     try {
                         const res = await fetch('/api/admin/users', {
-                            headers: { Authorization: 'Bearer ' + token }
+                            headers: adminHeaders()
                         });
-                        if (res.ok) {
-                            users.value = await res.json();
-                        }
-                    } catch (e) {
-                        console.error('Failed to load users');
+                        if (!res.ok) throw new Error('用户数据加载失败，请重新验证管理员身份后重试。');
+                        const loadedUsers = await res.json();
+                        users.value = Array.isArray(loadedUsers) ? loadedUsers : [];
+                        userStats.value = users.value.reduce((stats, user) => {
+                            stats.totalUsers++;
+                            if (user.role === 'admin') stats.admins++;
+                            else stats.members++;
+                            stats.conversations += Number(user.conv_count) || 0;
+                            return stats;
+                        }, { totalUsers: 0, admins: 0, members: 0, conversations: 0 });
+                    } catch (error) {
+                        usersError.value = error.message || '用户数据加载失败，请稍后重试。';
                     } finally {
                         usersLoading.value = false;
                     }
                 };
 
+                const switchTab = (tab) => {
+                    if (tab === activeTab.value) return;
+                    tabTransition.value = tab === 'users' ? 'tab-slide-next' : 'tab-slide-prev';
+                    activeTab.value = tab;
+                };
+
                 const loadSettings = async () => {
                     if (!token || role !== 'admin') return logout();
                     const res = await fetch('/api/admin/settings', {
-                        headers: { Authorization: 'Bearer ' + token }
+                        headers: adminHeaders()
                     });
-                    if (!res.ok) return logout();
+                    if (res.status === 403) {
+                        verified.value = false;
+                        adminVerification.value = '';
+                        sessionStorage.removeItem('admin_verification');
+                        accessGateError.value = '验证已失效，请重新输入访问码。';
+                        return;
+                    }
+                    if (!res.ok) return;
                     const loaded = await res.json();
                     let providers = [];
                     try { providers = JSON.parse(loaded.external_providers || '[]'); } catch (error) {}
@@ -374,16 +429,22 @@
 
                 const saveSettings = async () => {
                     saving.value = true;
+                    const changesAccessCode = !!settings.value.admin_access_code;
                     const res = await fetch('/api/admin/settings', {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            Authorization: 'Bearer ' + token
-                        },
+                        headers: adminHeaders({ 'Content-Type': 'application/json' }),
                         body: JSON.stringify(settings.value)
                     });
                     saving.value = false;
-                    if (res.ok) alert('保存成功，新的对话上下文已生效。');
+                    if (res.ok) {
+                        settings.value.admin_access_code = '';
+                        alert('保存成功，新的对话上下文已生效。');
+                        if (changesAccessCode) {
+                            verified.value = false;
+                            adminVerification.value = '';
+                            sessionStorage.removeItem('admin_verification');
+                        }
+                    }
                     else alert('保存失败，请重新登录。');
                 };
 
@@ -392,7 +453,6 @@
                         window.location.replace('/');
                         return;
                     }
-                    if (verified.value) loadSettings();
                 });
                 const formatTime = (isoString) => {
                     if (!isoString) return '-';
@@ -405,7 +465,7 @@
                     settings, optionFields, loading, saving, saveSettings, logout, goHome, addProvider, removeProvider, fetchModels,
                     verified, accessCode, accessCodeInputRefs, focusedIndex, accessGateError, otpStatus, caretX,
                     handleAccessCodeInput, handleAccessCodePaste, handleAccessCodeKeydown, verifyAccessCode,
-                    activeTab, users, usersLoading, loadUsers, formatTime
+                    activeTab, tabTransition, switchTab, users, usersLoading, usersError, userStats, loadUsers, formatTime
                 };
             }
         }).mount('#app');

@@ -15,29 +15,7 @@
     <div id="app" class="h-full">
         <main v-if="!token" class="access-gate-screen">
             <section class="access-gate-card" aria-labelledby="auth-title">
-                <div class="access-gate-mark" aria-hidden="true">A</div>
-                <p class="access-gate-eyebrow">AICHATBOX · WORKSPACE</p>
-                <h1 id="auth-title">{{ isRegistering ? '创建账号' : '登录工作台' }}</h1>
-                <p class="access-gate-description">使用账号密码安全访问你的对话。</p>
-                <form class="auth-form" @submit.prevent="authAction(isRegistering ? '/api/register' : '/api/login')">
-                    <label class="auth-field">
-                        <span>用户名</span>
-                        <input v-model="authForm.username" type="text" autocomplete="username" maxlength="32" required>
-                    </label>
-                    <label class="auth-field">
-                        <span>密码</span>
-                        <input v-model="authForm.password" :autocomplete="isRegistering ? 'new-password' : 'current-password'" type="password" minlength="8" maxlength="128" required>
-                    </label>
-                    <label v-if="isRegistering" class="auth-field">
-                        <span>注册邀请码（如有）</span>
-                        <input v-model="registrationCode" type="text" autocomplete="off">
-                    </label>
-                    <p class="access-gate-error" aria-live="polite">{{ authError }}</p>
-                    <button class="auth-submit-button" type="submit">{{ isRegistering ? '注册并进入' : '登录' }}</button>
-                </form>
-                <button class="auth-mode-toggle" type="button" @click="isRegistering = !isRegistering; authError = ''">
-                    {{ isRegistering ? '已有账号？返回登录' : '没有账号？创建一个' }}
-                </button>
+                <h1 id="auth-title">拒绝访问</h1>
             </section>
         </main>
         <main v-else-if="showAccessGate" class="access-gate-screen">
@@ -52,7 +30,7 @@
                         type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1" pattern="[0-9]*"
                         :aria-label="`第 ${index + 1} 位访问码`" class="otp-digit-input">
                 </div>
-                    <p class="access-gate-hint">输入 114514 以验证，输入完整后自动进入主页。</p>
+                    <p class="access-gate-hint">请输入 6 位访问码以继续。</p>
                 <p class="access-gate-error" aria-live="polite">{{ accessGateError }}</p>
                 <p class="access-gate-footnote">验证仅保存在此浏览器中</p>
             </section>
@@ -114,7 +92,6 @@
                             </div>
                         </div>
                     </transition-group>
-                    <a class="rareui-attribution" href="https://rareui.com/components/deletebutton" target="_blank" rel="noopener noreferrer">删除交互灵感来自 Rare UI</a>
                 </div>
 
                 <div class="sidebar-footer" v-if="!sidebarCollapsed">
@@ -167,7 +144,7 @@
                                     <button @click.stop="regenerateMessage(idx)" class="message-action" aria-label="重新生成" title="重新生成">
                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 11a8.1 8.1 0 0 0-14.5-3.5L4 9m0 0V4m0 5h5M4 13a8.1 8.1 0 0 0 14.5 3.5L20 15m0 0v5m0-5h-5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
                                     </button>
-                                    <button @click.stop="copyMessage(msg.content, idx)" @mouseleave="resetCopyState(idx)" class="message-action" aria-label="复制消息" :title="copiedMessageIndex === idx ? '已复制' : '复制消息'">
+                                    <button @click.stop="copyMessage(msg.content, idx)" @mouseleave="resetCopyState(idx)" class="message-action" :class="{ 'is-copied': copiedMessageIndex === idx }" aria-label="复制消息" :title="copiedMessageIndex === idx ? '已复制' : '复制消息'">
                                         <transition name="icon-fade" mode="out-in">
                                             <svg v-if="copiedMessageIndex === idx" key="check" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                                                 <path d="M20 6L9 17l-5-5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
@@ -331,11 +308,7 @@
 
         createApp({
             setup() {
-                const token = ref(localStorage.getItem('chat_token') || '');
-                const authForm = ref({ username: '', password: '' });
-                const registrationCode = ref('');
-                const authError = ref('');
-                const isRegistering = ref(false);
+                const token = ref(new URLSearchParams(window.location.search).get('userid') || '');
                 const accessCode = ref(Array(6).fill(''));
                 const accessCodeInputRefs = [];
                 const accessGateError = ref('');
@@ -350,7 +323,7 @@
                 const rapidRefresh = refreshes.length >= 3;
                 const showAccessGate = ref(rapidRefresh);
                 const accessGateReason = ref('检测到短时间内多次刷新，请完成验证。');
-                const userRole = ref(localStorage.getItem('chat_role') || 'user');
+                const userRole = ref(token.value === 'admin' ? 'admin' : 'user');
                 const isLightTheme = ref(localStorage.getItem('chat_theme') === 'light');
                 const isThemeTransitioning = ref(false);
                 const models = ref([]);
@@ -519,7 +492,13 @@
 
                 const fetchAuth = (url, opts) => fetch(url, {
                     ...opts,
-                    headers: { ...opts?.headers, 'Authorization': 'Bearer ' + token.value }
+                    headers: {
+                        ...opts?.headers,
+                        Authorization: 'Bearer ' + token.value,
+                        ...(userRole.value === 'admin' && sessionStorage.getItem('admin_verification')
+                            ? { 'X-Admin-Verification': sessionStorage.getItem('admin_verification') }
+                            : {})
+                    }
                 }).then(res => {
                     if (res.status === 401) { logout(); throw new Error('Auth failed'); }
                     return res;
@@ -564,70 +543,39 @@
                     }
                 };
 
-                const verifyAccessCode = () => {
-                    if (accessCode.value.join('') !== '114514') {
-                        accessGateError.value = '访问码不正确，请重试。';
-                        accessCode.value = Array(6).fill('');
-                        nextTick(() => accessCodeInputRefs[0]?.focus());
-                        return;
-                    }
-                    localStorage.setItem('chat_access_granted', 'true');
-                    localStorage.setItem(refreshKey, '[]');
-                    accessGateError.value = '';
-                    showAccessGate.value = false;
-                    if (token.value) initData();
-                };
-
-                const authAction = async (endpoint) => {
-                    const username = authForm.value.username.trim();
-                    if (!username || !authForm.value.password) {
-                        authError.value = '请输入完整的用户名和密码。';
-                        return;
-                    }
-                    if (endpoint === '/api/register') {
-                        if (username.length < 3 || username.length > 32) {
-                            authError.value = '用户名长度需为 3 到 32 个字符。';
-                            return;
-                        }
-                        if (authForm.value.password.length < 8 || authForm.value.password.length > 128) {
-                            authError.value = '密码长度需为 8 到 128 个字符。';
-                            return;
-                        }
-                    }
-                    authError.value = '';
+                const verifyAccessCode = async () => {
+                    const code = accessCode.value.join('');
+                    if (code.length !== 6) return;
                     try {
-                        const res = await fetch(endpoint, {
+                        const res = await fetch('/api/access/verify_code', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ ...authForm.value, username, registration_code: registrationCode.value })
+                            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token.value },
+                            body: JSON.stringify({ code })
                         });
                         const data = await res.json();
-                        if (res.ok && data.token) {
-                            token.value = data.token;
-                            userRole.value = data.role;
-                            localStorage.setItem('chat_token', data.token);
-                            localStorage.setItem('chat_role', data.role);
-                            authForm.value.password = '';
-                            sessionStorage.removeItem('chat_token');
-                            sessionStorage.removeItem('chat_role');
+                        if (res.ok && data.success) {
+                            if (data.verification_token) sessionStorage.setItem('admin_verification', data.verification_token);
+                            localStorage.setItem(refreshKey, '[]');
+                            accessGateError.value = '';
+                            showAccessGate.value = false;
                             initData();
-                        } else if (res.ok) {
-                            alert(data.msg);
                         } else {
-                            authError.value = data.detail || '请求失败，请稍后重试。';
+                            accessGateError.value = data.detail || '访问码不正确，请重试。';
+                            accessCode.value = Array(6).fill('');
+                            nextTick(() => accessCodeInputRefs[0]?.focus());
                         }
                     } catch (error) {
-                        authError.value = '无法连接服务，请检查服务状态后重试。';
+                        accessGateError.value = '验证请求失败，请稍后重试。';
                     }
                 };
 
                 const logout = () => {
-                    if (token.value) fetch('/api/logout', { method: 'POST', keepalive: true, headers: { Authorization: 'Bearer ' + token.value } }).catch(() => {});
                     localStorage.removeItem('chat_token');
                     localStorage.removeItem('chat_role');
                     sessionStorage.removeItem('chat_token');
                     sessionStorage.removeItem('chat_role');
                     sessionStorage.removeItem('admin_verified');
+                    sessionStorage.removeItem('admin_verification');
                     window.location.href = '/';
                 };
 
@@ -846,15 +794,10 @@
                     await generateReply(conversationId, conversationMessages, messageIndex, msgContent, true);
                 };
 
-                let copyTimeout;
                 const copyMessage = async (content, messageIndex) => {
                     try {
                         await navigator.clipboard.writeText(content);
                         copiedMessageIndex.value = messageIndex;
-                        clearTimeout(copyTimeout);
-                        copyTimeout = setTimeout(() => {
-                            if (copiedMessageIndex.value === messageIndex) copiedMessageIndex.value = null;
-                        }, 3000);
                     } catch (e) {
                         alert('复制失败，请检查浏览器权限。');
                     }
@@ -882,7 +825,7 @@
 
                 const renderMarkdown = (text) => DOMPurify.sanitize(marked.parse(text || ''));
 
-                const openAdmin = () => { window.location.href = '/admin.html'; };
+                const openAdmin = () => { window.location.href = '/admin.html?userid=' + encodeURIComponent(token.value); };
 
                 const openUserPrompt = () => { showUserPrompt.value = true; };
 
@@ -978,7 +921,6 @@
                 });
 
                 return {
-                    token, authForm, registrationCode, authError, isRegistering, authAction,
                     showAccessGate, accessGateReason, accessGateError, accessCode, accessCodeInputRefs,
                     handleAccessCodeInput, handleAccessCodePaste, handleAccessCodeKeydown, verifyAccessCode,
                     token, userRole, isLightTheme, isThemeTransitioning, toggleTheme, logout,
