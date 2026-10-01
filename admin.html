@@ -6,23 +6,47 @@
     <title>管理后台 - AI Chatbox</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="/styles/tailwind.css">
+    <link rel="stylesheet" href="/styles/app.css">
     <script src="/vendor/vue.global.prod.js"></script>
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
-    <div id="app" class="max-w-4xl mx-auto p-6 sm:p-10">
-        <header class="flex items-center justify-between border-b border-gray-700 pb-5 mb-8">
-            <div>
-                <p class="text-blue-400 text-sm mb-1">AI Chatbox</p>
-                <h1 class="text-2xl font-bold">管理后台</h1>
-            </div>
-            <div class="flex gap-3">
-                <button @click="goHome" class="px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 transition">返回聊天</button>
-                <button @click="logout" class="px-4 py-2 rounded-lg text-gray-400 hover:text-red-400 transition">退出登录</button>
-            </div>
-        </header>
+    <div id="app" class="h-full">
+        <main v-if="!verified" class="access-gate-screen">
+            <section class="access-gate-card" aria-labelledby="access-gate-title">
+                <div class="access-gate-mark" aria-hidden="true">A</div>
+                <p class="access-gate-eyebrow">ADMIN PANEL</p>
+                <h1 id="access-gate-title">进入后台前，请完成身份验证</h1>
+                <p class="access-gate-description">输入 6 位后台访问码以继续</p>
+                <div class="otp-digit-group" role="group" aria-label="六位访问码">
+                    <input v-for="(digit, index) in accessCode" :key="index" :ref="element => { if (element) accessCodeInputRefs[index] = element; }"
+                        :value="digit" @input="handleAccessCodeInput(index, $event)" @keydown="handleAccessCodeKeydown(index, $event)" @paste="handleAccessCodePaste"
+                        type="password" inputmode="numeric" autocomplete="one-time-code" maxlength="1" pattern="[0-9]*"
+                        :aria-label="`第 ${index + 1} 位访问码`" class="otp-digit-input">
+                </div>
+                <p class="access-gate-error" aria-live="polite">{{ accessGateError }}</p>
+                <p class="access-gate-footnote">关闭页面后需重新验证</p>
+            </section>
+        </main>
+        
+        <div v-else class="max-w-4xl mx-auto p-6 sm:p-10">
+            <header class="flex items-center justify-between border-b border-gray-700 pb-5 mb-6">
+                <div>
+                    <p class="text-blue-400 text-sm mb-1">AI Chatbox</p>
+                    <h1 class="text-2xl font-bold">管理后台</h1>
+                </div>
+                <div class="flex gap-3">
+                    <button @click="goHome" class="px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 transition">返回聊天</button>
+                    <button @click="logout" class="px-4 py-2 rounded-lg text-gray-400 hover:text-red-400 transition">退出</button>
+                </div>
+            </header>
 
-        <div v-if="loading" class="text-gray-400">正在加载...</div>
-        <section v-else class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-xl">
+            <div class="flex gap-4 mb-6 border-b border-gray-700 pb-2">
+                <button @click="activeTab = 'settings'" :class="{'text-blue-400 font-semibold border-b-2 border-blue-400 pb-2': activeTab === 'settings', 'text-gray-400 hover:text-gray-200 pb-2': activeTab !== 'settings'}">系统设置</button>
+                <button @click="activeTab = 'users'; loadUsers()" :class="{'text-blue-400 font-semibold border-b-2 border-blue-400 pb-2': activeTab === 'users', 'text-gray-400 hover:text-gray-200 pb-2': activeTab !== 'users'}">用户管理</button>
+            </div>
+
+            <div v-if="loading" class="text-gray-400">正在加载...</div>
+            <section v-if="!loading && activeTab === 'settings'" class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-xl">
             <h2 class="text-lg font-semibold mb-2">全局系统提示词</h2>
             <p class="text-sm text-gray-400 mb-5">此内容会注入所有用户的新对话上下文。</p>
             <textarea v-model="settings.global_system_prompt" rows="10" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-4 focus:outline-none focus:border-blue-500 text-gray-200"></textarea>
@@ -32,9 +56,9 @@
                 <span class="block text-xs text-gray-500 mt-2">用于外部 API 请求和获取模型；留空时不使用代理。</span>
             </label>
             <label class="block mt-6">
-                <span class="block text-sm text-gray-300 mb-2">注册邀请码</span>
-                <input v-model="settings.registration_code" type="password" autocomplete="new-password" maxlength="128" placeholder="留空则开放注册" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
-                <span class="block text-xs text-gray-500 mt-2">设置后注册必须填写该邀请码；清空并保存后恢复开放注册。</span>
+                <span class="block text-sm text-gray-300 mb-2">后台安全访问码 (6位数字)</span>
+                <input v-model="settings.admin_access_code" type="password" autocomplete="new-password" maxlength="6" pattern="[0-9]*" placeholder="默认为 111111" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 focus:outline-none focus:border-blue-500 text-gray-200">
+                <span class="block text-xs text-gray-500 mt-2">用于进入此管理页面的二次身份验证。</span>
             </label>
             <div class="flex items-center justify-between gap-4 mt-8 mb-2">
                 <h2 class="text-lg font-semibold">外部 API</h2>
@@ -94,16 +118,129 @@
                 </button>
             </div>
         </section>
+
+        <section v-if="!loading && activeTab === 'users'" class="bg-gray-800 border border-gray-700 rounded-xl p-6 shadow-xl">
+            <h2 class="text-lg font-semibold mb-4">用户列表 ({{ users.length }})</h2>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm text-gray-300 table-fixed min-w-[600px]">
+                    <thead class="text-xs text-gray-400 uppercase bg-gray-900 border-b border-gray-700">
+                        <tr>
+                            <th scope="col" class="px-4 py-3 truncate w-1/4">User ID</th>
+                            <th scope="col" class="px-4 py-3 w-28">权限角色</th>
+                            <th scope="col" class="px-4 py-3 w-20">对话数</th>
+                            <th scope="col" class="px-4 py-3 truncate w-1/4">最后 IP</th>
+                            <th scope="col" class="px-4 py-3 truncate w-40 text-right">最后活动时间</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="user in users" :key="user.id" class="border-b border-gray-700 hover:bg-gray-750">
+                            <td class="px-4 py-3 font-medium text-gray-100 truncate" :title="user.username">{{ user.username }}</td>
+                            <td class="px-4 py-3">
+                                <span v-if="user.role === 'admin'" class="px-2 py-1 rounded text-xs bg-red-900 text-red-200">Admin</span>
+                                <span v-else class="px-2 py-1 rounded text-xs bg-blue-900 text-blue-200">User</span>
+                            </td>
+                            <td class="px-4 py-3">{{ user.conv_count }}</td>
+                            <td class="px-4 py-3 truncate" :title="user.last_ip || '-'">{{ user.last_ip || '-' }}</td>
+                            <td class="px-4 py-3 text-right text-gray-400 text-xs">{{ formatTime(user.last_active) }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div v-if="users.length === 0 && !usersLoading" class="text-center text-gray-500 py-6">暂无用户数据</div>
+            </div>
+        </section>
+        </div>
     </div>
 
     <script>
-        const { createApp, ref, onMounted } = Vue;
+        const { createApp, ref, onMounted, nextTick, watch } = Vue;
 
         createApp({
             setup() {
                 const token = localStorage.getItem('chat_token') || '';
                 const role = localStorage.getItem('chat_role') || '';
-                const settings = ref({ global_system_prompt: '', providers: [] });
+                const settings = ref({ global_system_prompt: '', providers: [], admin_access_code: '' });
+                const verified = ref(sessionStorage.getItem('admin_verified') === 'true');
+                const accessCode = ref(Array(6).fill(''));
+                const accessCodeInputRefs = [];
+                const focusedIndex = ref(null);
+                const accessGateError = ref('');
+                const otpStatus = ref('idle');
+                const caretX = ref(0);
+
+                watch(focusedIndex, (idx) => {
+                    if (idx !== null) {
+                        nextTick(() => {
+                            const el = accessCodeInputRefs[idx];
+                            if (el && el.parentElement) {
+                                caretX.value = el.parentElement.offsetLeft + el.parentElement.offsetWidth / 2;
+                            }
+                        });
+                    }
+                });
+
+                const handleAccessCodeInput = (index, event) => {
+                    const digits = event.target.value.replace(/\D/g, '');
+                    const nextCode = [...accessCode.value];
+                    if (digits.length > 1) {
+                        for (let offset = 0; offset < digits.length && index + offset < nextCode.length; offset++) {
+                            nextCode[index + offset] = digits[offset];
+                        }
+                    } else {
+                        nextCode[index] = digits;
+                    }
+                    accessCode.value = nextCode;
+                    event.target.value = nextCode[index];
+                    if (digits && index < accessCodeInputRefs.length - 1) {
+                        accessCodeInputRefs[Math.min(index + digits.length, accessCodeInputRefs.length - 1)]?.focus();
+                    }
+                    if (nextCode.every(Boolean)) verifyAccessCode();
+                };
+
+                const handleAccessCodePaste = (event) => {
+                    const digits = event.clipboardData?.getData('text').replace(/\D/g, '').slice(0, 6) || '';
+                    if (!digits) return;
+                    event.preventDefault();
+                    accessCode.value = Array.from({ length: 6 }, (_, index) => digits[index] || '');
+                    nextTick(() => accessCodeInputRefs[Math.min(digits.length, 5)]?.focus());
+                    if (digits.length === 6) verifyAccessCode();
+                };
+
+                const handleAccessCodeKeydown = (index, event) => {
+                    if (event.key === 'Backspace' && !accessCode.value[index] && index > 0) {
+                        accessCodeInputRefs[index - 1]?.focus();
+                    } else if (event.key === 'ArrowLeft' && index > 0) {
+                        event.preventDefault();
+                        accessCodeInputRefs[index - 1]?.focus();
+                    } else if (event.key === 'ArrowRight' && index < accessCodeInputRefs.length - 1) {
+                        event.preventDefault();
+                        accessCodeInputRefs[index + 1]?.focus();
+                    }
+                };
+
+                const verifyAccessCode = async () => {
+                    const code = accessCode.value.join('');
+                    try {
+                        const res = await fetch('/api/admin/verify_code', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+                            body: JSON.stringify({ code })
+                        });
+                        const data = await res.json();
+                        if (res.ok && data.success) {
+                            sessionStorage.setItem('admin_verified', 'true');
+                            verified.value = true;
+                            accessGateError.value = '';
+                            loadSettings();
+                        } else {
+                            accessGateError.value = data.detail || '验证码不正确';
+                            accessCode.value = Array(6).fill('');
+                            nextTick(() => accessCodeInputRefs[0]?.focus());
+                        }
+                    } catch (e) {
+                        accessGateError.value = '请求失败，请稍后重试。';
+                    }
+                };
+
                 const optionFields = [
                     { key: 'temperature', label: '温度', help: '越高越有创造性，范围 0 到 2。', step: '0.1', min: '0', max: '2' },
                     { key: 'num_ctx', label: '上下文长度', help: '模型可读取的上下文 token 数。', step: '128', min: '128', max: '131072' },
@@ -117,8 +254,12 @@
                 const saving = ref(false);
 
                 const logout = () => {
+                    if (token) fetch('/api/logout', { method: 'POST', keepalive: true, headers: { Authorization: 'Bearer ' + token } }).catch(() => {});
                     localStorage.removeItem('chat_token');
                     localStorage.removeItem('chat_role');
+                    sessionStorage.removeItem('chat_token');
+                    sessionStorage.removeItem('chat_role');
+                    sessionStorage.removeItem('admin_verified');
                     window.location.href = '/';
                 };
 
@@ -164,6 +305,26 @@
                     }
                 };
 
+                const activeTab = ref('settings');
+                const users = ref([]);
+                const usersLoading = ref(false);
+
+                const loadUsers = async () => {
+                    usersLoading.value = true;
+                    try {
+                        const res = await fetch('/api/admin/users', {
+                            headers: { Authorization: 'Bearer ' + token }
+                        });
+                        if (res.ok) {
+                            users.value = await res.json();
+                        }
+                    } catch (e) {
+                        console.error('Failed to load users');
+                    } finally {
+                        usersLoading.value = false;
+                    }
+                };
+
                 const loadSettings = async () => {
                     if (!token || role !== 'admin') return logout();
                     const res = await fetch('/api/admin/settings', {
@@ -183,6 +344,7 @@
                     }
                     settings.value = { ...loaded, proxy_url: loaded.proxy_url || '', providers: providers.map(provider => createProvider(provider)) };
                     loading.value = false;
+                    loadUsers();
                 };
 
                 const saveSettings = async () => {
@@ -200,8 +362,26 @@
                     else alert('保存失败，请重新登录。');
                 };
 
-                onMounted(loadSettings);
-                return { settings, optionFields, loading, saving, saveSettings, logout, goHome, addProvider, removeProvider, fetchModels };
+                onMounted(() => {
+                    if (!token || role !== 'admin') {
+                        window.location.replace('/');
+                        return;
+                    }
+                    if (verified.value) loadSettings();
+                });
+                const formatTime = (isoString) => {
+                    if (!isoString) return '-';
+                    const d = new Date(isoString);
+                    const pad = (n) => String(n).padStart(2, '0');
+                    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                };
+
+                return { 
+                    settings, optionFields, loading, saving, saveSettings, logout, goHome, addProvider, removeProvider, fetchModels,
+                    verified, accessCode, accessCodeInputRefs, focusedIndex, accessGateError, otpStatus, caretX, otpStatus, caretX,
+                    handleAccessCodeInput, handleAccessCodePaste, handleAccessCodeKeydown, verifyAccessCode,
+                    activeTab, users, usersLoading, loadUsers, formatTime
+                };
             }
         }).mount('#app');
     </script>

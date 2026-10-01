@@ -9,10 +9,38 @@
     <link rel="stylesheet" href="/styles/app.css">
     <script src="/vendor/vue.global.prod.js"></script>
     <script src="/vendor/marked.umd.js"></script>
+    <script src="/vendor/purify.min.js"></script>
 </head>
 <body class="app-shell bg-gray-900 text-gray-100 h-screen font-sans overflow-hidden">
     <div id="app" class="h-full">
-        <main v-if="showAccessGate" class="access-gate-screen">
+        <main v-if="!token" class="access-gate-screen">
+            <section class="access-gate-card" aria-labelledby="auth-title">
+                <div class="access-gate-mark" aria-hidden="true">A</div>
+                <p class="access-gate-eyebrow">AICHATBOX · WORKSPACE</p>
+                <h1 id="auth-title">{{ isRegistering ? '创建账号' : '登录工作台' }}</h1>
+                <p class="access-gate-description">使用账号密码安全访问你的对话。</p>
+                <form class="auth-form" @submit.prevent="authAction(isRegistering ? '/api/register' : '/api/login')">
+                    <label class="auth-field">
+                        <span>用户名</span>
+                        <input v-model="authForm.username" type="text" autocomplete="username" maxlength="32" required>
+                    </label>
+                    <label class="auth-field">
+                        <span>密码</span>
+                        <input v-model="authForm.password" :autocomplete="isRegistering ? 'new-password' : 'current-password'" type="password" minlength="8" maxlength="128" required>
+                    </label>
+                    <label v-if="isRegistering" class="auth-field">
+                        <span>注册邀请码（如有）</span>
+                        <input v-model="registrationCode" type="text" autocomplete="off">
+                    </label>
+                    <p class="access-gate-error" aria-live="polite">{{ authError }}</p>
+                    <button class="auth-submit-button" type="submit">{{ isRegistering ? '注册并进入' : '登录' }}</button>
+                </form>
+                <button class="auth-mode-toggle" type="button" @click="isRegistering = !isRegistering; authError = ''">
+                    {{ isRegistering ? '已有账号？返回登录' : '没有账号？创建一个' }}
+                </button>
+            </section>
+        </main>
+        <main v-else-if="showAccessGate" class="access-gate-screen">
             <section class="access-gate-card" aria-labelledby="access-gate-title">
                 <div class="access-gate-mark" aria-hidden="true">A</div>
                 <p class="access-gate-eyebrow">AICHATBOX · ACCESS CHECK</p>
@@ -30,37 +58,8 @@
             </section>
         </main>
         <div v-else class="h-full flex flex-col" :class="{ 'theme-light': isLightTheme, 'theme-dark': !isLightTheme, 'theme-transition': isThemeTransitioning }" @touchstart="handleTouchStart" @touchend="handleTouchEnd">
-        <!-- 登录/注册页 -->
-        <div v-if="!token" class="auth-screen">
-            <div class="auth-orbit auth-orbit-one"></div>
-            <div class="auth-orbit auth-orbit-two"></div>
-            <div class="auth-panel">
-                <div class="brand-mark brand-mark-large"><span>O</span></div>
-                <div class="auth-kicker">LOCAL INTELLIGENCE</div>
-                <h2>本地 AI 终端</h2>
-                <p class="auth-subtitle">把想法交给你的专属智能工作台</p>
-                <div class="auth-form">
-                    <label>用户名</label>
-                    <input v-model="authForm.username" type="text" minlength="3" maxlength="32" autocomplete="username" placeholder="输入用户名" class="auth-input">
-                    <label>密码</label>
-                    <input v-model="authForm.password" type="password" placeholder="输入密码" class="auth-input">
-                    <template v-if="isRegistering">
-                        <label for="registration-code">注册邀请码（可选）</label>
-                        <input id="registration-code" v-model="registrationCode" type="text" autocomplete="off" maxlength="128"
-                            placeholder="管理员设置邀请码时填写" class="auth-input">
-                    </template>
-                </div>
-                <div class="auth-actions">
-                    <button @click="authAction('/api/login')" class="primary-action">登录</button>
-                    <button @click="authAction('/api/register')" class="secondary-action">{{ isRegistering ? '确认注册' : '注册' }}</button>
-                </div>
-                <p v-if="authError" class="auth-error" role="alert">{{ authError }}</p>
-                <div class="auth-status"><span></span> 安全连接 · 数据保存在本地</div>
-            </div>
-        </div>
-
         <!-- 聊天主界面 -->
-        <div v-else class="chat-app-shell">
+        <div class="chat-app-shell">
             <button v-if="isSidebarOpen" class="sidebar-backdrop" type="button" aria-label="关闭侧边栏" @click="closeSidebar"></button>
             <aside class="gemini-sidebar" :class="{ 'is-collapsed': sidebarCollapsed, 'mobile-open': isSidebarOpen }">
                 <div class="sidebar-header">
@@ -97,7 +96,10 @@
                                     :aria-expanded="expandedDeleteId === conversation.id"
                                     @click.stop="toggleDeleteControl(conversation)">
                                     <svg v-if="completedDeleteId === conversation.id" class="delete-check-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>
-                                    <svg v-else class="delete-bin-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path class="delete-bin-lid" d="M4 7h16M10 11v6m4-6v6M5 7l1 13h12l1-13M9 7V4h6v3" /></svg>
+                                    <svg v-else class="delete-bin-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true" style="overflow: visible;">
+                                        <g class="delete-bin-lid"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></g>
+                                        <path class="delete-bin-body" d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M10 11v6M14 11v6" />
+                                    </svg>
                                 </button>
                                 <transition name="delete-panel">
                                     <div v-if="expandedDeleteId === conversation.id" class="delete-confirm-panel" role="group" aria-label="确认删除对话">
@@ -121,7 +123,7 @@
                             <span class="settings-text">设置</span>
                         </button>
                         <div v-if="settingsMenuOpen" class="settings-menu">
-                            <button @click="openModelSettings">模型管理</button>
+                            <button v-if="userRole === 'admin'" @click="openModelSettings">模型管理</button>
                             <button @click="openUserPrompt">我的提示词</button>
                             <button @click="toggleTheme">{{ isLightTheme ? '暗色模式' : '亮色模式' }}</button>
                             <button v-if="userRole === 'admin'" @click="openAdmin">管理后台</button>
@@ -165,8 +167,16 @@
                                     <button @click.stop="regenerateMessage(idx)" class="message-action" aria-label="重新生成" title="重新生成">
                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 11a8.1 8.1 0 0 0-14.5-3.5L4 9m0 0V4m0 5h5M4 13a8.1 8.1 0 0 0 14.5 3.5L20 15m0 0v5m0-5h-5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
                                     </button>
-                                    <button @click.stop="copyMessage(msg.content, idx)" class="message-action" aria-label="复制消息" :title="copiedMessageIndex === idx ? '已复制' : '复制消息'">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="8" y="8" width="11" height="11" rx="2" stroke-width="1.8"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke-width="1.8"></path></svg>
+                                    <button @click.stop="copyMessage(msg.content, idx)" @mouseleave="resetCopyState(idx)" class="message-action" aria-label="复制消息" :title="copiedMessageIndex === idx ? '已复制' : '复制消息'">
+                                        <transition name="icon-fade" mode="out-in">
+                                            <svg v-if="copiedMessageIndex === idx" key="check" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                                <path d="M20 6L9 17l-5-5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                                            </svg>
+                                            <svg v-else key="copy" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                                <rect x="8" y="8" width="11" height="11" rx="2" stroke-width="1.8"></rect>
+                                                <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke-width="1.8"></path>
+                                            </svg>
+                                        </transition>
                                     </button>
                                     <span v-if="msg.outputSpeed" class="output-speed" :title="`估算输出速率：${msg.outputSpeed} tok/s`">{{ msg.outputSpeed }} tok/s</span>
                                 </div>
@@ -177,9 +187,9 @@
 
                 <div class="chat-input-wrapper">
                     <div class="chat-composer">
-                        <textarea v-model="inputText" @keydown.enter.exact.prevent="sendMessage" rows="1" placeholder="点击输入文本"
+                        <textarea ref="textareaRef" v-model="inputText" @keydown.enter.exact.prevent="sendMessage" rows="1" placeholder="点击输入文本"
                                   class="composer-textarea"
-                                  style="min-height: 44px;"></textarea>
+                                  style="min-height: 44px; max-height: 250px; overflow-y: auto;"></textarea>
                         <div class="composer-right-tools" @click.stop>
                             <button @click="toggleModelMenu" class="composer-model-trigger" :aria-expanded="modelMenuOpen ? 'true' : 'false'" type="button" aria-label="选择模型">
                                 <span class="composer-model-mark" aria-hidden="true">AI</span>
@@ -253,9 +263,9 @@
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 20 8v8l-8 4.5L4 16V8l8-4.5Z"/><path d="m4.5 8.2 7.5 4.3 7.5-4.3M12 12.5v8"/></svg>
                         </span>
                         <div>
-                            <p class="model-settings-eyebrow">PERSONAL WORKSPACE</p>
-                            <h2 id="model-settings-title">模型管理</h2>
-                            <p class="model-settings-description">请优先使用Google和本地的模型，开销小一点（哭）</p>
+                            <p class="model-settings-eyebrow">GLOBAL WORKSPACE</p>
+                            <h2 id="model-settings-title">全局模型分配</h2>
+                            <p class="model-settings-description">勾选后，所有用户都能在聊天主界面中看到并使用这些模型。</p>
                         </div>
                     </div>
                     <button @click="showModelSettings = false" type="button" class="model-settings-close" aria-label="关闭">✕</button>
@@ -317,11 +327,15 @@
     </div>
 
     <script>
-        const { createApp, ref, computed, onMounted, onUnmounted, nextTick } = Vue;
+        const { createApp, ref, computed, onMounted, onUnmounted, nextTick, watch } = Vue;
 
         createApp({
             setup() {
                 const token = ref(localStorage.getItem('chat_token') || '');
+                const authForm = ref({ username: '', password: '' });
+                const registrationCode = ref('');
+                const authError = ref('');
+                const isRegistering = ref(false);
                 const accessCode = ref(Array(6).fill(''));
                 const accessCodeInputRefs = [];
                 const accessGateError = ref('');
@@ -336,13 +350,9 @@
                 const rapidRefresh = refreshes.length >= 3;
                 const showAccessGate = ref(rapidRefresh);
                 const accessGateReason = ref('检测到短时间内多次刷新，请完成验证。');
-                const userRole = ref(localStorage.getItem('chat_role') || '');
+                const userRole = ref(localStorage.getItem('chat_role') || 'user');
                 const isLightTheme = ref(localStorage.getItem('chat_theme') === 'light');
                 const isThemeTransitioning = ref(false);
-                const authForm = ref({ username: '', password: '' });
-                const isRegistering = ref(false);
-                const registrationCode = ref('');
-                const authError = ref('');
                 const models = ref([]);
                 const modelCatalog = ref([]);
                 const selectedModel = ref('');
@@ -381,6 +391,22 @@
                 let welcomeHeadlineTransitionTimer = null;
                 let welcomeHeadlineIndex = 0;
                 const inputText = ref('');
+                const textareaRef = ref(null);
+
+                const autoResize = () => {
+                    const el = textareaRef.value;
+                    if (!el) return;
+                    el.style.height = '44px'; // Reset to base to calculate properly
+                    if (inputText.value) {
+                        const newHeight = Math.min(el.scrollHeight, 250);
+                        el.style.height = `${newHeight}px`;
+                    }
+                };
+
+                watch(inputText, () => {
+                    nextTick(autoResize);
+                });
+
                 const isGenerating = ref(false);
                 const generatingConversationId = ref(null);
                 const copiedMessageIndex = ref(null);
@@ -495,7 +521,7 @@
                     ...opts,
                     headers: { ...opts?.headers, 'Authorization': 'Bearer ' + token.value }
                 }).then(res => {
-                    if (res.status === 401 || res.status === 403) { logout(); throw new Error('Auth failed'); }
+                    if (res.status === 401) { logout(); throw new Error('Auth failed'); }
                     return res;
                 });
 
@@ -553,12 +579,6 @@
                 };
 
                 const authAction = async (endpoint) => {
-                    if (endpoint === '/api/register' && !isRegistering.value) {
-                        isRegistering.value = true;
-                        authError.value = '';
-                        return;
-                    }
-                    if (endpoint === '/api/login') isRegistering.value = false;
                     const username = authForm.value.username.trim();
                     if (!username || !authForm.value.password) {
                         authError.value = '请输入完整的用户名和密码。';
@@ -587,6 +607,9 @@
                             userRole.value = data.role;
                             localStorage.setItem('chat_token', data.token);
                             localStorage.setItem('chat_role', data.role);
+                            authForm.value.password = '';
+                            sessionStorage.removeItem('chat_token');
+                            sessionStorage.removeItem('chat_role');
                             initData();
                         } else if (res.ok) {
                             alert(data.msg);
@@ -599,11 +622,13 @@
                 };
 
                 const logout = () => {
-                    token.value = '';
-                    userRole.value = '';
-                    settingsMenuOpen.value = false;
+                    if (token.value) fetch('/api/logout', { method: 'POST', keepalive: true, headers: { Authorization: 'Bearer ' + token.value } }).catch(() => {});
                     localStorage.removeItem('chat_token');
                     localStorage.removeItem('chat_role');
+                    sessionStorage.removeItem('chat_token');
+                    sessionStorage.removeItem('chat_role');
+                    sessionStorage.removeItem('admin_verified');
+                    window.location.href = '/';
                 };
 
                 const toggleTheme = () => {
@@ -821,15 +846,23 @@
                     await generateReply(conversationId, conversationMessages, messageIndex, msgContent, true);
                 };
 
+                let copyTimeout;
                 const copyMessage = async (content, messageIndex) => {
                     try {
                         await navigator.clipboard.writeText(content);
                         copiedMessageIndex.value = messageIndex;
-                        setTimeout(() => {
+                        clearTimeout(copyTimeout);
+                        copyTimeout = setTimeout(() => {
                             if (copiedMessageIndex.value === messageIndex) copiedMessageIndex.value = null;
-                        }, 1500);
+                        }, 3000);
                     } catch (e) {
                         alert('复制失败，请检查浏览器权限。');
+                    }
+                };
+
+                const resetCopyState = (messageIndex) => {
+                    if (copiedMessageIndex.value === messageIndex) {
+                        copiedMessageIndex.value = null;
                     }
                 };
 
@@ -847,7 +880,7 @@
                     });
                 };
 
-                const renderMarkdown = (text) => marked.parse(text || '');
+                const renderMarkdown = (text) => DOMPurify.sanitize(marked.parse(text || ''));
 
                 const openAdmin = () => { window.location.href = '/admin.html'; };
 
@@ -945,14 +978,14 @@
                 });
 
                 return {
+                    token, authForm, registrationCode, authError, isRegistering, authAction,
                     showAccessGate, accessGateReason, accessGateError, accessCode, accessCodeInputRefs,
                     handleAccessCodeInput, handleAccessCodePaste, handleAccessCodeKeydown, verifyAccessCode,
-                    token, userRole, isLightTheme, isThemeTransitioning, toggleTheme, authForm, authAction, logout,
-                    isRegistering, registrationCode, authError,
-                    models, selectedModel, getSelectedModelLabel, convs, currentConvId, messages, inputText,
+                    token, userRole, isLightTheme, isThemeTransitioning, toggleTheme, logout,
+                    models, selectedModel, getSelectedModelLabel, convs, currentConvId, messages, inputText, textareaRef,
                     modelMenuOpen, toggleModelMenu, closeModelMenu, selectModel, filteredModelGroups, handleModelSearchEscape,
                     newChat, loadChat, sendMessage, isGenerating, renderMarkdown,
-                    regenerateMessage, copyMessage, copiedMessageIndex,
+                    regenerateMessage, copyMessage, resetCopyState, copiedMessageIndex,
                     openAdmin, showUserPrompt, personalPrompt, openUserPrompt, saveUserPrompt,
                     showModelSettings, openModelSettings, modelCatalog, modelSettingsSearch, modelSettingsFilter, modelSettingsFilters, modelMenuSearch,
                     enabledModelNames, enabledModelSet, modelFilterCounts, savingModelSettings, filteredModels, filteredCatalogModels,

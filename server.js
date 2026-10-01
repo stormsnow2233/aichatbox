@@ -9,7 +9,8 @@ const { ProxyAgent } = require('undici');
 const app = express();
 const scrypt = promisify(crypto.scrypt);
 app.use(express.json());
-app.use(express.static(__dirname));
+app.use('/styles', express.static(path.join(__dirname, 'styles')));
+app.use('/vendor', express.static(path.join(__dirname, 'vendor')));
 app.disable('etag');
 app.use((req, res, next) => {
     res.set({
@@ -30,7 +31,8 @@ const GOOGLE_MODELS = [
     'gemini-3.1-flash-lite',
     'gemini-3-flash-preview'
 ];
-const configPath = path.join(__dirname, 'config.txt');
+const configPath = process.env.CONFIG_PATH || path.join(__dirname, 'config.txt');
+const databasePath = process.env.DB_PATH || path.join(__dirname, 'chatbox.db');
 const modelOptionDefaults = {
     temperature: '0.7',
     num_ctx: '4096',
@@ -43,26 +45,23 @@ const modelOptionDefaults = {
 
 function loadAdminConfig() {
     const defaults = { admin_username: 'admin', admin_password: 'admin123' };
-    try {
-        return fs.readFileSync(configPath, 'utf8').split(/\r?\n/).reduce((config, line) => {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith('#')) return config;
-            const separator = trimmed.indexOf('=');
-            if (separator === -1) return config;
-            const key = trimmed.slice(0, separator).trim();
-            const value = trimmed.slice(separator + 1).trim();
-            if (key in defaults && value) config[key] = value;
-            return config;
-        }, { ...defaults });
-    } catch (err) {
-        fs.writeFileSync(configPath, 'admin_username=admin\nadmin_password=admin123\n', 'utf8');
-        return defaults;
+    if (!fs.existsSync(configPath)) {
+        fs.writeFileSync(configPath, `admin_username=${defaults.admin_username}\nadmin_password=${defaults.admin_password}\n`, 'utf8');
     }
+    const values = fs.readFileSync(configPath, 'utf8').split(/\r?\n/).reduce((result, line) => {
+        const separator = line.indexOf('=');
+        if (separator > 0) result[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
+        return result;
+    }, {});
+    return {
+        admin_username: values.admin_username || defaults.admin_username,
+        admin_password: values.admin_password || defaults.admin_password
+    };
 }
 
 const adminConfig = loadAdminConfig();
 
-const db = new sqlite3.Database('chatbox.db');
+const db = new sqlite3.Database(databasePath);
 const dbRun = (sql, params = []) => new Promise((res, rej) => db.run(sql, params, function(err) { err ? rej(err) : res(this) }));
 const dbGet = (sql, params = []) => new Promise((res, rej) => db.get(sql, params, (err, row) => err ? rej(err) : res(row)));
 const dbAll = (sql, params = []) => new Promise((res, rej) => db.all(sql, params, (err, rows) => err ? rej(err) : res(rows)));
@@ -72,18 +71,29 @@ const hashPassword = async (password) => {
     const hash = await scrypt(password, salt, 64);
     return `scrypt$${salt}$${hash.toString('hex')}`;
 };
-const verifyPassword = async (password, encoded) => {
-    const parts = String(encoded || '').split('$');
-    if (parts.length === 3 && parts[0] === 'scrypt' && /^[a-f0-9]{32}$/i.test(parts[1]) && /^[a-f0-9]{128}$/i.test(parts[2])) {
-        const hash = await scrypt(password, parts[1], 64);
-        return crypto.timingSafeEqual(hash, Buffer.from(parts[2], 'hex'));
+
+const verifyPassword = async (password, storedHash) => {
+    if (storedHash?.startsWith('scrypt$')) {
+        const [, salt, hashHex] = storedHash.split('$');
+        if (!salt || !/^[a-f\d]{128}$/i.test(hashHex || '')) return false;
+        const actual = await scrypt(password, salt, 64);
+        return crypto.timingSafeEqual(actual, Buffer.from(hashHex, 'hex'));
     }
-    if (/^[a-f0-9]{64}$/i.test(encoded || '')) {
-        const legacyHash = Buffer.from(crypto.createHash('sha256').update(password).digest('hex'), 'hex');
-        return crypto.timingSafeEqual(legacyHash, Buffer.from(encoded, 'hex'));
+    if (/^[a-f\d]{64}$/i.test(storedHash || '')) {
+        const actual = crypto.createHash('sha256').update(password).digest();
+        return crypto.timingSafeEqual(actual, Buffer.from(storedHash, 'hex'));
     }
     return false;
 };
+
+const createSession = async (userId) => {
+    const token = crypto.randomBytes(32).toString('base64url');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    await dbRun('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', [tokenHash, userId, expiresAt]);
+    return token;
+};
+
 const clampNumber = (value, min, max, fallback) => {
     const number = Number(value);
     return Number.isFinite(number) ? Math.min(Math.max(number, min), max) : fallback;
@@ -92,91 +102,121 @@ const clampInteger = (value, min, max, fallback) => Math.trunc(clampNumber(value
 
 async function initDB() {
     await dbRun(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, role TEXT)`);
-    await dbRun(`CREATE TABLE IF NOT EXISTS tokens (token TEXT PRIMARY KEY, user_id INTEGER)`);
+    try { await dbRun(`ALTER TABLE users ADD COLUMN last_ip TEXT`); } catch (err) {}
+    try { await dbRun(`ALTER TABLE users ADD COLUMN last_active TEXT`); } catch (err) {}
     await dbRun(`CREATE TABLE IF NOT EXISTS conversations (id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT, model TEXT)`);
     try { await dbRun(`ALTER TABLE conversations ADD COLUMN model TEXT`); } catch (err) {}
     await dbRun(`CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, conv_id INTEGER, role TEXT, content TEXT)`);
     await dbRun(`CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER PRIMARY KEY, personal_prompt TEXT NOT NULL DEFAULT '')`);
     try { await dbRun(`ALTER TABLE user_settings ADD COLUMN enabled_models TEXT`); } catch (err) {}
+    await dbRun(`CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at TEXT NOT NULL)`);
+    try { await dbRun(`ALTER TABLE sessions ADD COLUMN admin_verified INTEGER NOT NULL DEFAULT 0`); } catch (err) {}
     await dbRun(`CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`);
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('global_system_prompt', '你是一个有用的 AI 助手。')`);
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('external_api_url', '')`);
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('external_api_key', '')`);
     await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('proxy_url', '')`);
-    await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('registration_code', '')`);
+    await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES ('admin_access_code', '111111')`);
     for (const [key, value] of Object.entries(modelOptionDefaults)) {
         await dbRun(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, [key, value]);
     }
-    
-    const adminHash = await hashPassword(adminConfig.admin_password);
+    const adminPasswordHash = await hashPassword(adminConfig.admin_password);
     await dbRun(`UPDATE users SET role = 'user' WHERE role = 'admin' AND username != ?`, [adminConfig.admin_username]);
-    await dbRun(`INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, 'admin')`, [adminConfig.admin_username, adminHash]);
-    await dbRun(`UPDATE users SET password = ?, role = 'admin' WHERE username = ?`, [adminHash, adminConfig.admin_username]);
+    await dbRun(`INSERT INTO users (username, password, role) VALUES (?, ?, 'admin')
+        ON CONFLICT(username) DO UPDATE SET password = excluded.password, role = 'admin'`, [adminConfig.admin_username, adminPasswordHash]);
+    await dbRun(`DELETE FROM sessions WHERE expires_at <= ?`, [new Date().toISOString()]);
 }
-initDB();
-
 async function authUser(req, res, next) {
     const auth = req.headers.authorization;
     if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ detail: 'Unauthorized' });
-    const token = auth.split(' ')[1];
-    const user = await dbGet(`SELECT u.* FROM users u JOIN tokens t ON u.id = t.user_id WHERE t.token = ?`, [token]);
+    const token = auth.slice('Bearer '.length).trim();
+    if (!token) return res.status(401).json({ detail: 'Unauthorized' });
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const user = await dbGet(`SELECT users.*, sessions.admin_verified FROM sessions JOIN users ON users.id = sessions.user_id
+        WHERE sessions.token_hash = ? AND sessions.expires_at > ?`, [tokenHash, new Date().toISOString()]);
     if (!user) return res.status(401).json({ detail: 'Unauthorized' });
+    const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || '';
+    const ipClean = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+    const nowIso = new Date().toISOString();
+    if (user.last_ip !== ipClean || Date.now() - new Date(user.last_active || 0).getTime() > 60000) {
+        await dbRun(`UPDATE users SET last_ip = ?, last_active = ? WHERE id = ?`, [ipClean, nowIso, user.id]);
+    }
+    req.sessionTokenHash = tokenHash;
     req.user = user;
+    req.adminVerified = user.admin_verified === 1;
     next();
 }
 
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/admin.html', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
+function requireAdmin(req, res, requireVerification = true) {
+    if (req.user.role !== 'admin') {
+        res.status(403).json({ detail: 'Forbidden' });
+        return false;
+    }
+    if (requireVerification && !req.adminVerified) {
+        res.status(403).json({ detail: '请先完成管理员访问码验证。' });
+        return false;
+    }
+    return true;
+}
 
 app.post('/api/register', async (req, res) => {
-    const body = req.body && typeof req.body === 'object' ? req.body : {};
-    const registrationSetting = await dbGet(`SELECT value FROM config WHERE key = 'registration_code'`);
-    const configuredCode = registrationSetting?.value || '';
-    if (configuredCode) {
-        const suppliedCode = typeof body.registration_code === 'string' ? Buffer.from(body.registration_code) : Buffer.alloc(0);
-        const expectedCode = Buffer.from(configuredCode);
-        if (suppliedCode.length !== expectedCode.length || !crypto.timingSafeEqual(suppliedCode, expectedCode)) {
-            return res.status(400).json({ detail: '注册邀请码不正确' });
-        }
-    }
-    const username = typeof body.username === 'string' ? body.username.trim() : '';
-    const password = typeof body.password === 'string' ? body.password : '';
-    if (username.length < 3 || username.length > 32 || /[\u0000-\u001f\u007f]/.test(username)) {
-        return res.status(400).json({ detail: '用户名长度需为 3 到 32 个字符，且不能包含控制字符' });
-    }
-    if (password.length < 8 || password.length > 128) {
-        return res.status(400).json({ detail: '密码长度需为 8 到 128 个字符' });
+    const username = String(req.body.username || '').trim();
+    const password = String(req.body.password || '');
+    if (!/^[\p{L}\p{N}_-]{3,32}$/u.test(username)) return res.status(400).json({ detail: '用户名需为 3 到 32 位字母、数字、下划线或连字符。' });
+    if (password.length < 8 || password.length > 128) return res.status(400).json({ detail: '密码长度需为 8 到 128 个字符。' });
+    const registrationCode = await dbGet(`SELECT value FROM config WHERE key = 'registration_code'`);
+    if (registrationCode?.value && String(req.body.registration_code || '').trim() !== registrationCode.value) {
+        return res.status(403).json({ detail: '注册邀请码不正确。' });
     }
     try {
-        await dbRun(`INSERT INTO users (username, password, role) VALUES (?, ?, 'user')`, [username, await hashPassword(password)]);
-        res.json({ msg: '注册成功' });
-    } catch (err) {
-        if (err.code?.startsWith('SQLITE_CONSTRAINT')) return res.status(409).json({ detail: '用户名已存在' });
-        console.error('Registration failed:', err.message);
-        res.status(500).json({ detail: '注册失败，请稍后重试' });
+        const passwordHash = await hashPassword(password);
+        const result = await dbRun(`INSERT INTO users (username, password, role) VALUES (?, ?, 'user')`, [username, passwordHash]);
+        const token = await createSession(result.lastID);
+        return res.status(201).json({ token, role: 'user' });
+    } catch (error) {
+        if (error.code === 'SQLITE_CONSTRAINT') return res.status(409).json({ detail: '用户名已被使用。' });
+        throw error;
     }
 });
 
 app.post('/api/login', async (req, res) => {
-    const body = req.body && typeof req.body === 'object' ? req.body : {};
-    if (typeof body.username !== 'string' || typeof body.password !== 'string' || !body.username.trim() || !body.password) {
-        return res.status(400).json({ detail: '请输入完整的账号和密码' });
+    const username = String(req.body.username || '').trim();
+    const password = String(req.body.password || '');
+    const user = await dbGet(`SELECT * FROM users WHERE username = ?`, [username]);
+    if (!user || !await verifyPassword(password, user.password)) return res.status(401).json({ detail: '用户名或密码错误。' });
+    if (!user.password.startsWith('scrypt$')) {
+        await dbRun(`UPDATE users SET password = ? WHERE id = ?`, [await hashPassword(password), user.id]);
     }
-    const user = await dbGet(`SELECT id, username, password, role FROM users WHERE username = ?`, [body.username.trim()]);
-    if (!user || !await verifyPassword(body.password, user.password)) return res.status(400).json({ detail: '账号或密码错误' });
-    if (!String(user.password).startsWith('scrypt$')) {
-        await dbRun(`UPDATE users SET password = ? WHERE id = ?`, [await hashPassword(body.password), user.id]);
-    }
-    const token = crypto.randomBytes(32).toString('hex');
-    await dbRun(`INSERT INTO tokens (token, user_id) VALUES (?, ?)`, [token, user.id]);
-    res.json({ token, username: user.username, role: user.role });
+    const token = await createSession(user.id);
+    res.json({ token, role: user.role });
 });
 
+app.post('/api/logout', authUser, async (req, res) => {
+    await dbRun(`DELETE FROM sessions WHERE token_hash = ?`, [req.sessionTokenHash]);
+    res.json({ msg: '已退出登录' });
+});
+
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/admin.html', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
+
+app.get('/api/admin/users', authUser, async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const users = await dbAll(`
+        SELECT u.id, u.username, u.role, REPLACE(u.last_ip, '::ffff:', '') as last_ip, u.last_active,
+               (SELECT COUNT(*) FROM conversations c WHERE c.user_id = u.id) as conv_count
+        FROM users u 
+        ORDER BY u.last_active DESC NULLS LAST, u.id DESC
+    `);
+    res.json(users);
+});
+
+
 app.get('/api/user/settings', authUser, async (req, res) => {
-    const settings = await dbGet(`SELECT personal_prompt, enabled_models FROM user_settings WHERE user_id = ?`, [req.user.id]);
+    const settings = await dbGet(`SELECT personal_prompt FROM user_settings WHERE user_id = ?`, [req.user.id]);
+    const globalSettings = await dbGet(`SELECT value FROM config WHERE key = 'global_enabled_models'`);
     let enabledModels = null;
-    if (settings?.enabled_models) {
-        try { enabledModels = JSON.parse(settings.enabled_models); } catch (err) { enabledModels = null; }
+    if (globalSettings?.value) {
+        try { enabledModels = JSON.parse(globalSettings.value); } catch (err) { enabledModels = null; }
     }
     res.json({ personal_prompt: settings?.personal_prompt || '', enabled_models: enabledModels });
 });
@@ -188,11 +228,12 @@ app.post('/api/user/settings', authUser, async (req, res) => {
 });
 
 app.post('/api/user/models', authUser, async (req, res) => {
+    if (!requireAdmin(req, res)) return;
     const requestedModels = Array.isArray(req.body.models) ? req.body.models.map(String) : [];
     const validModels = new Set((await getModelCatalog()).map(model => model.name));
     const enabledModels = [...new Set(requestedModels.filter(model => validModels.has(model)))];
-    await dbRun(`INSERT INTO user_settings (user_id, enabled_models) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET enabled_models = excluded.enabled_models`, [req.user.id, JSON.stringify(enabledModels)]);
-    res.json({ msg: '模型偏好已保存', enabled_models: enabledModels });
+    await dbRun(`INSERT INTO config (key, value) VALUES ('global_enabled_models', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [JSON.stringify(enabledModels)]);
+    res.json({ msg: '全局模型偏好已保存', enabled_models: enabledModels });
 });
 
 function normalizeProvider(provider) {
@@ -300,10 +341,10 @@ app.get('/api/models/catalog', authUser, async (req, res) => {
 app.get('/api/models', authUser, async (req, res) => {
     try {
         const catalog = await getModelCatalog();
-        const settings = await dbGet(`SELECT enabled_models FROM user_settings WHERE user_id = ?`, [req.user.id]);
+        const settings = await dbGet(`SELECT value FROM config WHERE key = 'global_enabled_models'`);
         let enabledModels = null;
-        if (settings?.enabled_models) {
-            try { enabledModels = JSON.parse(settings.enabled_models); } catch (err) {}
+        if (settings?.value) {
+            try { enabledModels = JSON.parse(settings.value); } catch (err) {}
         }
         const visibleModels = enabledModels === null
             ? catalog.filter(model => model.default_enabled)
@@ -485,19 +526,35 @@ app.post('/api/chat', authUser, async (req, res) => {
         await dbRun(`INSERT INTO messages (conv_id, role, content) VALUES (?, 'assistant', ?)`, [conv_id, fullReply]);
     } catch (err) {
         console.error('Chat request failed:', err.message);
-        if (!res.headersSent) res.status(502).json({ detail: err.message || 'External API connection error' });
+        if (!res.headersSent) {
+            res.status(502).json({ detail: err.message || 'External API connection error' });
+        } else {
+            res.end();
+        }
     }
 });
 
 app.get('/api/admin/settings', authUser, async (req, res) => {
-    if (req.user.role !== 'admin') return res.status(403).json({ detail: 'Forbidden' });
+    if (!requireAdmin(req, res)) return;
     const config = await dbAll(`SELECT * FROM config`);
     const settings = config.reduce((acc, curr) => ({ ...acc, [curr.key]: curr.value }), {});
     res.json(settings);
 });
 
+app.post('/api/admin/verify_code', authUser, async (req, res) => {
+    if (!requireAdmin(req, res, false)) return;
+    const codeSetting = await dbGet(`SELECT value FROM config WHERE key = 'admin_access_code'`);
+    const expectedCode = codeSetting?.value || '111111';
+    if (String(req.body.code) === expectedCode) {
+        await dbRun(`UPDATE sessions SET admin_verified = 1 WHERE token_hash = ?`, [req.sessionTokenHash]);
+        res.json({ success: true });
+    } else {
+        res.status(400).json({ detail: '访问码不正确' });
+    }
+});
+
 app.post('/api/admin/models', authUser, async (req, res) => {
-    if (req.user.role !== 'admin') return res.status(403).json({ detail: 'Forbidden' });
+    if (!requireAdmin(req, res)) return;
     try {
         const provider = normalizeProvider(req.body || {});
         if (!provider.api_key) return res.status(400).json({ detail: '请先填写 API Key' });
@@ -509,9 +566,12 @@ app.post('/api/admin/models', authUser, async (req, res) => {
 });
 
 app.post('/api/admin/settings', authUser, async (req, res) => {
-    if (req.user.role !== 'admin') return res.status(403).json({ detail: 'Forbidden' });
+    if (!requireAdmin(req, res)) return;
     await dbRun(`UPDATE config SET value = ? WHERE key = 'global_system_prompt'`, [String(req.body.global_system_prompt || '')]);
     await dbRun(`INSERT INTO config (key, value) VALUES ('proxy_url', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(req.body.proxy_url || '').trim().slice(0, 500)]);
+    if (req.body.admin_access_code !== undefined) {
+        await dbRun(`INSERT INTO config (key, value) VALUES ('admin_access_code', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(req.body.admin_access_code).trim()]);
+    }
     await dbRun(`INSERT INTO config (key, value) VALUES ('registration_code', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(req.body.registration_code || '').trim().slice(0, 128)]);
     for (const key of Object.keys(modelOptionDefaults)) {
         if (req.body[key] !== undefined) {
@@ -526,4 +586,9 @@ app.post('/api/admin/settings', authUser, async (req, res) => {
 });
 
 const port = process.env.PORT || 8000;
-app.listen(port, () => console.log(`Server is running on http://localhost:${port}`));
+initDB().then(() => {
+    app.listen(port, () => console.log(`Server is running on http://localhost:${port}`));
+}).catch(error => {
+    console.error('Database initialization failed:', error.message);
+    process.exit(1);
+});
